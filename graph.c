@@ -1,6 +1,6 @@
 #include "graph.h"
 #include <stdlib.h>
-
+// Allocates a new graph and initializes the matrix to -1 (no edges)
 Graph* create_graph(int n, int m) {
     Graph* g = malloc(sizeof(Graph));
     g->n = n;
@@ -10,7 +10,7 @@ Graph* create_graph(int n, int m) {
             g->matrix[i][j] = -1; // -1 means no edge
     return g;
 }
-
+// Frees the memory allocated for the graph
 void free_graph(Graph* g) {
     free(g);
 }

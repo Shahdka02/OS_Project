@@ -21,8 +21,9 @@ DijkstraResult dijkstra(Graph* g, int src, int dst) {
         prev[i]    = -1;
         visited[i] = 0;
     }
+    // Distance from source to itself is 0
     dist[src] = 0;
-
+    // Main loop - runs once per node
     for (int iter = 0; iter < g->n; iter++) {
         // Pick unvisited node with smallest distance
         int u = -1;
@@ -30,6 +31,7 @@ DijkstraResult dijkstra(Graph* g, int src, int dst) {
             if (!visited[i] && (u == -1 || dist[i] < dist[u]))
                 u = i;
         }
+        // If no reachable unvisited nodes remain, stop early
         if (u == -1 || dist[u] == INF) break;
         visited[u] = 1;
 

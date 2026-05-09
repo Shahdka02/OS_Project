@@ -2,7 +2,7 @@
 #define DIJKSTRA_H
 
 #include "graph.h"
-
+// Stores the result of running Dijkstra
 typedef struct {
     int path[MAX_NODES];
     int path_len;
