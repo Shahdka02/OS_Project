@@ -1,6 +1,6 @@
 CC     = gcc
 CFLAGS = -Wall -Wextra -g
-RAYLIB_FLAGS = -lraylib -lm
+RAYLIB_FLAGS = -I/usr/local/include -L/usr/local/lib -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 
 milestone1: main.o graph.o dijkstra.o
 	$(CC) $(CFLAGS) -o dijkstra main.o graph.o dijkstra.o

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "graph.h"
 #include "dijkstra.h"
+#include "gui.h"
 
 int main(int argc, char* argv[]) {
     // Make sure the user provided a filename
@@ -68,6 +69,7 @@ int main(int argc, char* argv[]) {
         printf("\n%d\n", res.total_weight);
     }
     // Free memory before exiting
+    draw_graph(g);
     free_graph(g);
     return 0;
 }
