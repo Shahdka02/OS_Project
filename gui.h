@@ -2,7 +2,9 @@
 #define GUI_H
 
 #include "graph.h"
+#include "dijkstra.h"
 
-void draw_graph(Graph* g);
+// Draws the graph in a raylib window, highlighting the shortest path
+void draw_graph(Graph* g, DijkstraResult* res);
 
 #endif
