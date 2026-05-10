@@ -4,6 +4,8 @@
 #include <stdio.h>
 
 void draw_graph(Graph* g) {
+    (void)g;
+
     InitWindow(800, 600, "Graph");
 
     while (!WindowShouldClose()) {
