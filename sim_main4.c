@@ -7,7 +7,6 @@
 #include "dijkstra.h"
 #include "gui.h"
 
-#define MAX_TRAVELERS 10
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {

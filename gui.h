@@ -1,6 +1,6 @@
 #ifndef GUI_H
 #define GUI_H
-
+#define MAX_TRAVELERS 10
 #include "graph.h"
 #include "dijkstra.h"
 #include <sys/types.h>
