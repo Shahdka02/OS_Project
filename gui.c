@@ -286,3 +286,264 @@ void draw_graph(Graph *g, DijkstraResult *res) {
 
     CloseWindow();
 }
+
+/* ============================================================
+ * Milestone 4 – multi-traveler GUI
+ * ============================================================ */
+#include <signal.h>
+#include <sys/types.h>
+
+/* One color per traveler (up to 10) */
+static Color traveler_colors[] = {
+    {160,  32, 240, 255},  /* purple  */
+    { 30, 144, 255, 255},  /* dodger blue */
+    {255, 140,   0, 255},  /* orange  */
+    { 50, 205,  50, 255},  /* lime green */
+    {220,  20,  60, 255},  /* crimson */
+    {  0, 206, 209, 255},  /* dark turquoise */
+    {255, 215,   0, 255},  /* gold */
+    {199,  21, 133, 255},  /* medium violet red */
+    {127, 255,   0, 255},  /* chartreuse */
+    {255, 105, 180, 255},  /* hot pink */
+};
+
+typedef struct {
+    int        active;      /* 1 = still travelling / at node */
+    AnimState  state;
+    int        path_idx;
+    int        jump;
+    int        W;
+    float      timer;
+    Vector2    entity;
+    pid_t      pid;
+} TravelerAnim;
+
+void draw_graph_multi(Graph* g, DijkstraResult* results, pid_t* pids, int num_travelers) {
+    Vector2 pos[MAX_NODES];
+    get_node_positions(g->n, pos);
+
+    TravelerAnim tv[MAX_TRAVELERS];
+    int playing = 0;
+
+    for (int i = 0; i < num_travelers; i++) {
+        tv[i].active    = 1;
+        tv[i].state     = ANIM_IDLE;
+        tv[i].path_idx  = 0;
+        tv[i].jump      = 0;
+        tv[i].W         = 0;
+        tv[i].timer     = 0.f;
+        tv[i].pid       = pids[i];
+        tv[i].entity    = (results[i].found && results[i].path_len > 0)
+                          ? pos[results[i].path[0]]
+                          : (Vector2){0, 0};
+    }
+
+    InitWindow(WINDOW_W, WINDOW_H, "Graph Simulation - Milestone 4");
+    SetTargetFPS(60);
+
+    Rectangle btn = { BTN_X, BTN_Y, BTN_W, BTN_H };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        /* ---- button click: play / stop / reset ---- */
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
+            CheckCollisionPointRec(GetMousePosition(), btn)) {
+
+            /* check if ALL done → reset */
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active && tv[i].state != ANIM_DONE) { all_done = 0; break; }
+
+            if (all_done) {
+                playing = 0;
+                for (int i = 0; i < num_travelers; i++) {
+                    tv[i].active   = 1;
+                    tv[i].state    = ANIM_IDLE;
+                    tv[i].path_idx = 0;
+                    tv[i].jump     = 0;
+                    tv[i].W        = 0;
+                    tv[i].timer    = 0.f;
+                    tv[i].entity   = (results[i].found && results[i].path_len > 0)
+                                     ? pos[results[i].path[0]]
+                                     : (Vector2){0, 0};
+                }
+            } else {
+                playing = !playing;
+                if (playing) {
+                    /* kick off every traveler that is still idle */
+                    for (int i = 0; i < num_travelers; i++) {
+                        if (tv[i].active && tv[i].state == ANIM_IDLE &&
+                            results[i].found && results[i].path_len > 1) {
+                            tv[i].state  = ANIM_MOVING;
+                            tv[i].timer  = 0.f;
+                            tv[i].jump   = 0;
+                            tv[i].W      = g->matrix[results[i].path[0]][results[i].path[1]];
+                            tv[i].entity = pos[results[i].path[0]];
+                        }
+                    }
+                }
+            }
+        }
+
+        /* ---- animation update for each traveler ---- */
+        if (playing) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (!tv[i].active || !results[i].found) continue;
+                if (tv[i].state == ANIM_DONE) continue;
+
+                tv[i].timer += dt;
+                DijkstraResult *res = &results[i];
+
+                if (tv[i].state == ANIM_MOVING) {
+                    if (tv[i].timer >= JUMP_SEC) {
+                        tv[i].timer -= JUMP_SEC;
+                        tv[i].jump++;
+
+                        if (tv[i].jump >= tv[i].W) {
+                            tv[i].path_idx++;
+                            tv[i].entity = pos[res->path[tv[i].path_idx]];
+                            tv[i].jump   = 0;
+                            tv[i].W      = 0;
+
+                            if (tv[i].path_idx == res->path_len - 1) {
+                                /* reached destination: signal the child */
+                                tv[i].state  = ANIM_DONE;
+                                kill(tv[i].pid, SIGTERM);
+                            } else {
+                                tv[i].state = ANIM_AT_NODE;
+                                tv[i].timer = 0.f;
+                            }
+                        } else {
+                            Vector2 from = pos[res->path[tv[i].path_idx]];
+                            Vector2 to   = pos[res->path[tv[i].path_idx + 1]];
+                            tv[i].entity = v2lerp(from, to, (float)tv[i].jump / tv[i].W);
+                        }
+                    } else {
+                        Vector2 from = pos[res->path[tv[i].path_idx]];
+                        Vector2 to   = pos[res->path[tv[i].path_idx + 1]];
+                        float   t    = ((float)tv[i].jump + tv[i].timer / JUMP_SEC) / (float)tv[i].W;
+                        if (t > 1.f) t = 1.f;
+                        tv[i].entity = v2lerp(from, to, t);
+                    }
+                } else if (tv[i].state == ANIM_AT_NODE) {
+                    if (tv[i].timer >= NODE_WAIT_SEC) {
+                        tv[i].state  = ANIM_MOVING;
+                        tv[i].timer  = 0.f;
+                        tv[i].jump   = 0;
+                        tv[i].W      = g->matrix[res->path[tv[i].path_idx]][res->path[tv[i].path_idx + 1]];
+                        tv[i].entity = pos[res->path[tv[i].path_idx]];
+                    }
+                }
+            }
+        }
+
+        /* ---- draw ---- */
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        DrawText("Milestone 4 - Multiple Travelers | Each color = one traveler",
+                 10, 10, 15, DARKGRAY);
+
+        /* edges (gray, no highlight — multiple paths make highlighting noisy) */
+        for (int i = 0; i < g->n; i++) {
+            for (int j = 0; j < g->n; j++) {
+                if (g->matrix[i][j] == -1) continue;
+                draw_arrow(pos[i], pos[j], LIGHTGRAY, 2.0f);
+                char ws[8];
+                sprintf(ws, "%d", g->matrix[i][j]);
+                DrawText(ws,
+                    (int)((pos[i].x + pos[j].x) / 2),
+                    (int)((pos[i].y + pos[j].y) / 2),
+                    16, DARKBLUE);
+            }
+        }
+
+        /* highlight each traveler's path in their own color (thin) */
+        for (int t = 0; t < num_travelers; t++) {
+            if (!results[t].found) continue;
+            Color pc = traveler_colors[t % 10];
+            pc.a = 160;
+            for (int k = 0; k < results[t].path_len - 1; k++) {
+                int a = results[t].path[k], b = results[t].path[k+1];
+                draw_arrow(pos[a], pos[b], pc, 3.0f);
+            }
+        }
+
+        /* nodes */
+        for (int i = 0; i < g->n; i++) {
+            DrawCircleV(pos[i], NODE_RADIUS, SKYBLUE);
+            DrawCircleLines(pos[i].x, pos[i].y, NODE_RADIUS, DARKGRAY);
+            char lbl[4];
+            sprintf(lbl, "%d", i);
+            int tw = MeasureText(lbl, 18);
+            DrawText(lbl, (int)(pos[i].x - tw/2), (int)(pos[i].y - 9), 18, BLACK);
+        }
+
+        /* travelers */
+        for (int t = 0; t < num_travelers; t++) {
+            if (!results[t].found || !tv[t].active) continue;
+            Color c = traveler_colors[t % 10];
+            /* slight offset so overlapping travelers don't fully hide each other */
+            Vector2 ep = { tv[t].entity.x + (t % 2 == 0 ? -6.f : 6.f) * (t / 2),
+                           tv[t].entity.y + (t % 2 == 0 ? -6.f : 6.f) * (t / 2) };
+            /* glow */
+            Color glow = c; glow.a = 80;
+            DrawCircleV(ep, ENTITY_R + 4, glow);
+            DrawCircleV(ep, ENTITY_R, c);
+            DrawCircleLines(ep.x, ep.y, ENTITY_R, DARKGRAY);
+            DrawCircleV(ep, 4, WHITE);
+            /* traveler index label */
+            char tl[4]; sprintf(tl, "%d", t);
+            DrawText(tl, (int)(ep.x - 4), (int)(ep.y - 8), 14, WHITE);
+        }
+
+        /* button */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active && tv[i].state != ANIM_DONE) { all_done = 0; break; }
+
+            Color bc; const char *lbl;
+            if (all_done)       { bc = DARKGRAY;                    lbl = "RESET"; }
+            else if (playing)   { bc = (Color){210,60,60,255};      lbl = "STOP";  }
+            else                { bc = (Color){60,170,60,255};       lbl = "PLAY";  }
+
+            DrawRectangleRec(btn, bc);
+            DrawRectangleLinesEx(btn, 2, DARKGRAY);
+            int lw = MeasureText(lbl, 20);
+            DrawText(lbl,
+                     (int)(btn.x + btn.width/2  - lw/2),
+                     (int)(btn.y + btn.height/2 - 10),
+                     20, WHITE);
+        }
+
+        /* per-traveler status strip on the right */
+        for (int t = 0; t < num_travelers; t++) {
+            Color c = traveler_colors[t % 10];
+            char line[64];
+            const char *status = "idle";
+            if      (tv[t].state == ANIM_MOVING)  status = "moving";
+            else if (tv[t].state == ANIM_AT_NODE)  status = "waiting";
+            else if (tv[t].state == ANIM_DONE)     status = "arrived!";
+            sprintf(line, "T%d [%d->%d]: %s", t,
+                    results[t].path[0],
+                    results[t].path[results[t].path_len - 1],
+                    status);
+            DrawRectangle(WINDOW_W - 210, 50 + t * 22, 200, 20,
+                          (Color){c.r, c.g, c.b, 40});
+            DrawText(line, WINDOW_W - 205, 52 + t * 22, 14, c);
+        }
+
+        EndDrawing();
+    }
+
+    /* If the window was closed before animation ended, signal remaining children */
+    for (int i = 0; i < num_travelers; i++) {
+        if (tv[i].active && tv[i].state != ANIM_DONE) {
+            kill(tv[i].pid, SIGTERM);
+        }
+    }
+
+    CloseWindow();
+}
