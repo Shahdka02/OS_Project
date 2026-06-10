@@ -15,6 +15,9 @@ milestone3: sim_main.o graph.o dijkstra.o gui.o
 milestone4: sim_main4.o graph.o dijkstra.o gui.o
 	$(CC) $(CFLAGS) -o sim sim_main4.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
 
+milestone5: sim_main5.o graph.o dijkstra.o gui.o
+	$(CC) $(CFLAGS) -o sim sim_main5.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
+
 main.o: main.c graph.h dijkstra.h
 	$(CC) $(CFLAGS) -c main.c
 
@@ -23,6 +26,9 @@ sim_main.o: sim_main.c graph.h dijkstra.h gui.h
 
 sim_main4.o: sim_main4.c graph.h dijkstra.h gui.h
 	$(CC) $(CFLAGS) $(RAYLIB_INCLUDE) -c sim_main4.c
+
+sim_main5.o: sim_main5.c graph.h dijkstra.h gui.h
+	$(CC) $(CFLAGS) $(RAYLIB_INCLUDE) -c sim_main5.c
 
 graph.o: graph.c graph.h
 	$(CC) $(CFLAGS) -c graph.c
