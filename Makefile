@@ -1,11 +1,19 @@
 CC     = gcc
 CFLAGS = -Wall -Wextra -g
-RAYLIB_INCLUDE = -I/opt/homebrew/Cellar/raylib/5.5/include
-RAYLIB_LIBS    = -L/opt/homebrew/Cellar/raylib/5.5/lib -lraylib -lm
+
+# MAcOS
+# RAYLIB_INCLUDE = -I/opt/homebrew/Cellar/raylib/5.5/include
+# RAYLIB_LIBS    = -L/opt/homebrew/Cellar/raylib/5.5/lib -lraylib -lm
+
+# Windows
+RAYLIB_INCLUDE = -I/usr/local/include
+RAYLIB_LIBS = -L/usr/local/lib -lraylib \
+              -lGL -lm -lpthread -ldl -lrt \
+              -lX11 -lXrandr -lXi -lXcursor -lXinerama
 
 milestone1: main.o graph.o dijkstra.o
-	$(CC) $(CFLAGS) -o dijkstra main.o graph.o dijkstra.o
-
+	$(CC) $(CFLAGS) -DMILESTONE1 -o dijkstra main.o graph.o dijkstra.o
+	
 milestone2: sim_main.o graph.o dijkstra.o gui.o
 	$(CC) $(CFLAGS) -o sim sim_main.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
 

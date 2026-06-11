@@ -1,3 +1,4 @@
 *.o
 dijkstra
 sim
+raylib/
