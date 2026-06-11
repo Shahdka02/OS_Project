@@ -785,3 +785,308 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
 
     CloseWindow();
 }
+
+/* ============================================================
+ * Milestone 6 – mutual exclusion: at most one traveler per node
+ *
+ * MSG_WAITING  → traveler drawn in YELLOW outside target node
+ * MSG_AT_NODE  → traveler drawn in its color INSIDE the node
+ * MSG_FINISHED → traveler removed from display
+ * ============================================================ */
+
+typedef enum {
+    T6_IDLE,      /* not started yet                  */
+    T6_TRAVELING, /* moving along an edge             */
+    T6_WAITING,   /* blocked outside a node           */
+    T6_AT_NODE,   /* inside the node (critical sec.)  */
+    T6_DONE       /* reached destination              */
+} T6State;
+
+typedef struct {
+    int      active;
+    T6State  state;
+    int      cur_node;   /* node currently at / waiting for  */
+    int      next_node;
+    int      jump;
+    int      W;
+    float    timer;
+    Vector2  entity;
+    pid_t    pid;
+    int      pipe_fd;
+    int      src_node;
+    int      dst_node;
+    /* trail of edges already traversed */
+    int      vis_from[MAX_NODES];
+    int      vis_to[MAX_NODES];
+    int      n_vis;
+} Traveler6;
+
+/* Yellow color for waiting travelers */
+#define WAITING_COLOR  ((Color){255, 220, 0, 255})
+#define WAITING_GLOW   ((Color){255, 220, 0, 80})
+
+void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
+                       int* t_src, int* t_dst, int num_travelers) {
+
+    Vector2 pos[MAX_NODES];
+    get_node_positions(g->n, pos);
+
+    Traveler6 tv[MAX_TRAVELERS];
+    for (int i = 0; i < num_travelers; i++) {
+        tv[i].active    = 1;
+        tv[i].state     = T6_IDLE;
+        tv[i].cur_node  = t_src[i];
+        tv[i].next_node = -1;
+        tv[i].jump      = 0;
+        tv[i].W         = 0;
+        tv[i].timer     = 0.f;
+        tv[i].entity    = pos[t_src[i]];
+        tv[i].pid       = pids[i];
+        tv[i].pipe_fd   = fds[i];
+        tv[i].src_node  = t_src[i];
+        tv[i].dst_node  = t_dst[i];
+        tv[i].n_vis     = 0;
+    }
+
+    InitWindow(WINDOW_W, WINDOW_H, "Graph Simulation - Milestone 6 (Mutex)");
+    SetTargetFPS(60);
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        /* --- read IPC messages from each traveler --- */
+        for (int i = 0; i < num_travelers; i++) {
+            if (!tv[i].active) continue;
+            /* read all available messages this frame */
+            PipeMsg msg;
+            while (read(tv[i].pipe_fd, &msg, sizeof(msg)) == sizeof(msg)) {
+                switch (msg.type) {
+
+                    case MSG_WAITING:
+                        /* blocked outside msg.current_node */
+                        tv[i].state     = T6_WAITING;
+                        tv[i].cur_node  = msg.current_node;
+                        tv[i].next_node = msg.next_node;
+                        /* position slightly outside the target node */
+                        {
+                            Vector2 target = pos[msg.current_node];
+                            /* offset toward previous node so it looks
+                               like it stopped just before entering    */
+                            int prev = tv[i].cur_node;
+                            Vector2 from = (tv[i].n_vis > 0)
+                                ? pos[tv[i].vis_from[tv[i].n_vis - 1]]
+                                : pos[tv[i].src_node];
+                            tv[i].entity = v2lerp(target, from, 0.3f);
+                        }
+                        printf("[PID=%d] WAITING outside node %d\n",
+                               (int)tv[i].pid, msg.current_node);
+                        fflush(stdout);
+                        break;
+
+                    case MSG_AT_NODE:
+                        /* acquired mutex — now inside the node */
+                        tv[i].state    = T6_AT_NODE;
+                        tv[i].cur_node = msg.current_node;
+                        tv[i].entity   = pos[msg.current_node];
+                        /* record traversed edge */
+                        if (tv[i].n_vis > 0) {
+                            int last = tv[i].vis_from[tv[i].n_vis - 1];
+                            if (last != msg.current_node &&
+                                tv[i].n_vis < MAX_NODES) {
+                                tv[i].vis_from[tv[i].n_vis] = last;
+                                tv[i].vis_to  [tv[i].n_vis] = msg.current_node;
+                                tv[i].n_vis++;
+                            }
+                        } else {
+                            /* first node: just record position */
+                        }
+                        /* start edge travel animation toward next node */
+                        if (msg.next_node >= 0) {
+                            tv[i].next_node = msg.next_node;
+                            tv[i].W         = g->matrix[msg.current_node]
+                                                       [msg.next_node];
+                            tv[i].jump      = 0;
+                            tv[i].timer     = 0.f;
+                            tv[i].state     = T6_TRAVELING;
+                        }
+                        printf("[PID=%d] ENTERED node %d\n",
+                               (int)tv[i].pid, msg.current_node);
+                        fflush(stdout);
+                        break;
+
+                    case MSG_FINISHED:
+                        /* traveler is done */
+                        tv[i].state  = T6_DONE;
+                        tv[i].active = 0;
+                        printf("[PID=%d] FINISHED\n", (int)tv[i].pid);
+                        fflush(stdout);
+                        break;
+
+                    default:
+                        break;
+                }
+            }
+        }
+
+        /* --- animation: smooth movement along edges --- */
+        for (int i = 0; i < num_travelers; i++) {
+            if (tv[i].state != T6_TRAVELING) continue;
+
+            tv[i].timer += dt;
+            Vector2 from = pos[tv[i].cur_node];
+            Vector2 to   = pos[tv[i].next_node];
+
+            if (tv[i].W <= 0) tv[i].W = 1;
+
+            if (tv[i].timer >= JUMP_SEC) {
+                tv[i].timer -= JUMP_SEC;
+                tv[i].jump++;
+                if (tv[i].jump >= tv[i].W) {
+                    /* arrived visually — wait for MSG_WAITING or MSG_AT_NODE */
+                    tv[i].entity    = to;
+                    tv[i].cur_node  = tv[i].next_node;
+                    tv[i].jump      = 0;
+                    tv[i].state     = T6_IDLE;
+                } else {
+                    tv[i].entity = v2lerp(from, to,
+                        (float)tv[i].jump / tv[i].W);
+                }
+            } else {
+                float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
+                          / (float)tv[i].W;
+                if (t > 1.f) t = 1.f;
+                tv[i].entity = v2lerp(from, to, t);
+            }
+        }
+
+        /* --- draw --- */
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        DrawText("Milestone 6 – Mutex: at most one traveler per node | YELLOW = waiting",
+                 10, 10, 15, DARKGRAY);
+
+        /* base edges */
+        for (int i = 0; i < g->n; i++) {
+            for (int j = 0; j < g->n; j++) {
+                if (g->matrix[i][j] == -1) continue;
+                draw_arrow(pos[i], pos[j], LIGHTGRAY, 2.0f);
+                char ws[8];
+                sprintf(ws, "%d", g->matrix[i][j]);
+                DrawText(ws,
+                    (int)((pos[i].x + pos[j].x) / 2),
+                    (int)((pos[i].y + pos[j].y) / 2),
+                    16, DARKBLUE);
+            }
+        }
+
+        /* highlight traversed edges per traveler */
+        for (int t = 0; t < num_travelers; t++) {
+            Color pc = traveler_colors[t % 10];
+            pc.a = 160;
+            for (int k = 0; k < tv[t].n_vis; k++) {
+                draw_arrow(pos[tv[t].vis_from[k]],
+                           pos[tv[t].vis_to[k]], pc, 3.0f);
+            }
+        }
+
+        /* nodes — highlight occupied nodes with a red ring */
+        for (int i = 0; i < g->n; i++) {
+            /* check if any traveler is AT this node */
+            int occupied = 0;
+            for (int t = 0; t < num_travelers; t++) {
+                if (tv[t].active &&
+                    tv[t].state == T6_AT_NODE &&
+                    tv[t].cur_node == i) { occupied = 1; break; }
+            }
+            /* check if any traveler is WAITING for this node */
+            int contested = 0;
+            for (int t = 0; t < num_travelers; t++) {
+                if (tv[t].active &&
+                    tv[t].state == T6_WAITING &&
+                    tv[t].cur_node == i) { contested = 1; break; }
+            }
+
+            Color nc = SKYBLUE;
+            if (occupied)  nc = (Color){255, 100, 100, 255}; /* red: locked  */
+            if (contested && !occupied) nc = (Color){255, 200, 80, 255}; /* amber: contested */
+
+            DrawCircleV(pos[i], NODE_RADIUS, nc);
+            DrawCircleLines(pos[i].x, pos[i].y, NODE_RADIUS, DARKGRAY);
+
+            /* extra ring when occupied */
+            if (occupied)
+                DrawCircleLines(pos[i].x, pos[i].y,
+                                NODE_RADIUS + 5, RED);
+
+            char lbl[4];
+            sprintf(lbl, "%d", i);
+            int tw = MeasureText(lbl, 18);
+            DrawText(lbl,
+                     (int)(pos[i].x - tw/2),
+                     (int)(pos[i].y - 9),
+                     18, BLACK);
+        }
+
+        /* traveler circles */
+        for (int t = 0; t < num_travelers; t++) {
+            if (!tv[t].active && tv[t].state != T6_DONE) continue;
+            if (tv[t].state == T6_IDLE && !tv[t].active) continue;
+
+            /* waiting travelers are drawn in yellow */
+            Color c = (tv[t].state == T6_WAITING)
+                      ? WAITING_COLOR
+                      : traveler_colors[t % 10];
+
+            if (!tv[t].active) c.a = 140; /* faded when done */
+
+            /* small offset so overlapping travelers are visible */
+            Vector2 ep = {
+                tv[t].entity.x + (t % 2 == 0 ? -7.f : 7.f) * (t / 2 + 1),
+                tv[t].entity.y + (t % 2 == 0 ? -7.f : 7.f) * (t / 2 + 1)
+            };
+
+            Color glow = c; glow.a = tv[t].active ? 80 : 30;
+            DrawCircleV(ep, ENTITY_R + 4, glow);
+            DrawCircleV(ep, ENTITY_R, c);
+            DrawCircleLines(ep.x, ep.y, ENTITY_R,
+                            (tv[t].state == T6_WAITING) ? YELLOW : DARKGRAY);
+            DrawCircleV(ep, 4, WHITE);
+
+            char tl[4]; sprintf(tl, "%d", t);
+            DrawText(tl, (int)(ep.x - 4), (int)(ep.y - 8), 14, BLACK);
+        }
+
+        /* per-traveler status strip */
+        for (int t = 0; t < num_travelers; t++) {
+            Color c = traveler_colors[t % 10];
+            const char* status = "idle";
+            if      (tv[t].state == T6_TRAVELING) status = "moving";
+            else if (tv[t].state == T6_WAITING)   status = "WAITING (blocked)";
+            else if (tv[t].state == T6_AT_NODE)   status = "in node (locked)";
+            else if (tv[t].state == T6_DONE)       status = "arrived!";
+            char line[64];
+            sprintf(line, "T%d [%d->%d]: %s", t,
+                    tv[t].src_node, tv[t].dst_node, status);
+            DrawRectangle(WINDOW_W - 220, 50 + t * 22, 210, 20,
+                          (Color){c.r, c.g, c.b, 40});
+            DrawText(line, WINDOW_W - 215, 52 + t * 22, 14, c);
+        }
+
+        /* legend */
+        DrawCircle(20, WINDOW_H - 70, 8, (Color){255,100,100,255});
+        DrawText("node locked",      34, WINDOW_H - 77, 13, DARKGRAY);
+        DrawCircle(20, WINDOW_H - 50, 8, WAITING_COLOR);
+        DrawText("traveler waiting", 34, WINDOW_H - 57, 13, DARKGRAY);
+        DrawCircle(20, WINDOW_H - 30, 8, traveler_colors[0]);
+        DrawText("traveler moving",  34, WINDOW_H - 37, 13, DARKGRAY);
+
+        EndDrawing();
+    }
+
+    /* signal any children still running */
+    for (int i = 0; i < num_travelers; i++)
+        if (tv[i].active) kill(tv[i].pid, SIGTERM);
+
+    CloseWindow();
+}
