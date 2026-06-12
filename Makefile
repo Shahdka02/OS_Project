@@ -27,7 +27,7 @@ milestone5: sim_main5.o graph.o dijkstra.o gui.o
 	$(CC) $(CFLAGS) -o sim sim_main5.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
 
 milestone6: sim_main6.o graph.o dijkstra.o gui.o
-	$(CC) $(CFLAGS) -o sim6 sim_main6.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
+	$(CC) $(CFLAGS) -o sim sim_main6.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
 
 main.o: main.c graph.h dijkstra.h
 	$(CC) $(CFLAGS) -c main.c
