@@ -41,3 +41,21 @@ One unidirectional pipe is created per child before `fork()`. The child writes `
 ```
 All log output comes exclusively from the parent process.
 
+## Milestone 6
+**Compile:** `make milestone6` | **Run:** `./sim <file_name>`
+
+Adds mutual exclusion: at most one traveler per node at any time. Travelers wait outside occupied nodes and enter one by one.
+
+**Sync mechanism:** One POSIX binary semaphore per node in `mmap(MAP_SHARED|MAP_ANONYMOUS)` shared memory. Child calls `sem_wait()` before entering, `sem_post()` after leaving.
+
+**GUI indicators:**
+- 🟡 Yellow traveler = waiting outside a locked node
+- 🔴 Red node = occupied (mutex held)
+- 🟠 Amber node = contested (someone waiting)
+
+**Log format:**
+```
+[PID=<pid>] WAITING outside node <X>
+[PID=<pid>] ENTERED node <X>
+[PID=<pid>] FINISHED
+```
