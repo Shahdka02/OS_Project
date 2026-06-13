@@ -69,7 +69,9 @@ int main(int argc, char* argv[]) {
         printf("\n%d\n", res.total_weight);
     }
     // Free memory before exiting
-    draw_graph(g);
+    #ifdef MILESTONE1
+    void draw_graph(Graph* g, DijkstraResult* res) { }
+    #endif    
     free_graph(g);
     return 0;
 }

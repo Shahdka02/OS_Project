@@ -563,10 +563,10 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
                        int* t_src, int* t_dst, int num_travelers) {
 
     typedef struct {
-        int       active;        /* 1 until "finished" message received   */
+        int       active;
         AnimState state;
-        int       from_node;     /* currently animating FROM this node    */
-        int       to_node;       /* currently animating TO  this node     */
+        int       from_node;
+        int       to_node;
         int       jump;
         int       W;
         float     timer;
@@ -575,7 +575,7 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
         int       pipe_fd;
         int       src_node;
         int       dst_node;
-        int       vis_from[MAX_NODES]; /* edges already traversed */
+        int       vis_from[MAX_NODES];
         int       vis_to[MAX_NODES];
         int       n_vis;
     } Traveler5;
@@ -600,36 +600,46 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
         tv[i].n_vis     = 0;
     }
 
+    int playing = 0;
+
     InitWindow(WINDOW_W, WINDOW_H, "Graph Simulation - Milestone 5");
     SetTargetFPS(60);
+
+    Rectangle btn = { BTN_X, BTN_Y, BTN_W, BTN_H };
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
 
-        /* --- read one IPC message per traveler per frame (skip if MOVING) --- */
-        for (int i = 0; i < num_travelers; i++) {
-            if (!tv[i].active || tv[i].state == ANIM_MOVING) continue;
+        /* ---- button click ---- */
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
+            CheckCollisionPointRec(GetMousePosition(), btn)) {
+            playing = !playing;
+        }
 
-            PipeMsg msg;
-            ssize_t n = read(tv[i].pipe_fd, &msg, sizeof(msg));
+        /* ---- read IPC + animate only when playing ---- */
+        if (playing) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (!tv[i].active) continue;
+                if (tv[i].state == ANIM_MOVING) continue;
 
-            if (n == sizeof(msg)) {
-                if (msg.current_node < 0) {
-                    /* finished signal */
+                PipeMsg msg;
+                ssize_t n = read(tv[i].pipe_fd, &msg, sizeof(msg));
+                if (n != (ssize_t)sizeof(msg)) continue;
+
+                if (msg.type == MSG_FINISHED) {
                     printf("[PID=%d] finished\n", (int)tv[i].pid);
                     fflush(stdout);
                     tv[i].active = 0;
-                } else if (msg.next_node < 0) {
-                    /* arrived at destination */
+                } else if (msg.type == MSG_AT_NODE && msg.next_node < 0) {
                     printf("[PID=%d] arrived at node %d | DESTINATION\n",
                            (int)tv[i].pid, msg.current_node);
                     fflush(stdout);
                     tv[i].from_node = msg.current_node;
                     tv[i].entity    = pos[msg.current_node];
                     tv[i].state     = ANIM_DONE;
-                } else {
-                    /* arrived at intermediate node – start moving to next */
-                    printf("[PID=%d] arrived at node %d | next node: %d\n",
+                    tv[i].active    = 0;
+                } else if (msg.type == MSG_AT_NODE) {
+                    printf("[PID=%d] at node %d | next: %d\n",
                            (int)tv[i].pid, msg.current_node, msg.next_node);
                     fflush(stdout);
                     if (tv[i].n_vis < MAX_NODES) {
@@ -640,58 +650,52 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
                     tv[i].from_node = msg.current_node;
                     tv[i].to_node   = msg.next_node;
                     tv[i].W         = g->matrix[msg.current_node][msg.next_node];
+                    if (tv[i].W < 1) tv[i].W = 1;
                     tv[i].jump      = 0;
                     tv[i].timer     = 0.f;
                     tv[i].entity    = pos[msg.current_node];
                     tv[i].state     = ANIM_MOVING;
                 }
-            } else if (n == 0) {
-                /* pipe closed unexpectedly – treat as finished */
-                tv[i].active = 0;
             }
-        }
 
-        /* --- animation update (same jump-based logic as milestone 4) --- */
-        for (int i = 0; i < num_travelers; i++) {
-            if (tv[i].state != ANIM_MOVING) continue;
+            /* ---- animation update ---- */
+            for (int i = 0; i < num_travelers; i++) {
+                if (tv[i].state != ANIM_MOVING) continue;
 
-            tv[i].timer += dt;
-
-            if (tv[i].timer >= JUMP_SEC) {
-                tv[i].timer -= JUMP_SEC;
-                tv[i].jump++;
-
-                if (tv[i].jump >= tv[i].W) {
-                    /* finished crossing the edge visually */
-                    tv[i].entity    = pos[tv[i].to_node];
-                    tv[i].from_node = tv[i].to_node;
-                    tv[i].state     = ANIM_AT_NODE; /* wait for next IPC msg */
-                    tv[i].jump      = 0;
-                    tv[i].timer     = 0.f;
-                } else {
-                    Vector2 from = pos[tv[i].from_node];
-                    Vector2 to   = pos[tv[i].to_node];
-                    tv[i].entity = v2lerp(from, to,
-                        (float)tv[i].jump / (float)tv[i].W);
-                }
-            } else {
+                tv[i].timer += dt;
                 Vector2 from = pos[tv[i].from_node];
                 Vector2 to   = pos[tv[i].to_node];
-                float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
-                          / (float)tv[i].W;
-                if (t > 1.f) t = 1.f;
-                tv[i].entity = v2lerp(from, to, t);
+
+                if (tv[i].timer >= JUMP_SEC) {
+                    tv[i].timer -= JUMP_SEC;
+                    tv[i].jump++;
+                    if (tv[i].jump >= tv[i].W) {
+                        tv[i].entity    = to;
+                        tv[i].from_node = tv[i].to_node;
+                        tv[i].jump      = 0;
+                        tv[i].state     = ANIM_AT_NODE;
+                        tv[i].timer     = 0.f;
+                    } else {
+                        tv[i].entity = v2lerp(from, to,
+                            (float)tv[i].jump / (float)tv[i].W);
+                    }
+                } else {
+                    float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
+                              / (float)tv[i].W;
+                    if (t > 1.f) t = 1.f;
+                    tv[i].entity = v2lerp(from, to, t);
+                }
             }
         }
 
-        /* --- draw --- */
+        /* ---- draw ---- */
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
         DrawText("Milestone 5 - IPC pipes: each traveler computes its own path",
                  10, 10, 15, DARKGRAY);
 
-        /* base edges */
+        /* edges */
         for (int i = 0; i < g->n; i++) {
             for (int j = 0; j < g->n; j++) {
                 if (g->matrix[i][j] == -1) continue;
@@ -705,14 +709,13 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             }
         }
 
-        /* highlight edges each traveler has already crossed */
+        /* traversed edges */
         for (int t = 0; t < num_travelers; t++) {
             Color pc = traveler_colors[t % 10];
             pc.a = 160;
-            for (int k = 0; k < tv[t].n_vis; k++) {
+            for (int k = 0; k < tv[t].n_vis; k++)
                 draw_arrow(pos[tv[t].vis_from[k]],
                            pos[tv[t].vis_to[k]], pc, 3.0f);
-            }
         }
 
         /* nodes */
@@ -722,22 +725,22 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             char lbl[4];
             sprintf(lbl, "%d", i);
             int tw = MeasureText(lbl, 18);
-            DrawText(lbl, (int)(pos[i].x - tw/2), (int)(pos[i].y - 9), 18, BLACK);
+            DrawText(lbl, (int)(pos[i].x - tw/2),
+                     (int)(pos[i].y - 9), 18, BLACK);
         }
 
-        /* traveler circles */
+        /* travelers */
         for (int t = 0; t < num_travelers; t++) {
-            /* skip only if finished with no path (never moved) */
             if (!tv[t].active && tv[t].state == ANIM_IDLE) continue;
 
             Color c = traveler_colors[t % 10];
-            if (!tv[t].active) c.a = 160; /* faded when fully done */
+            if (!tv[t].active) c.a = 160;
 
             Vector2 ep = {
                 tv[t].entity.x + (t % 2 == 0 ? -6.f : 6.f) * (t / 2),
                 tv[t].entity.y + (t % 2 == 0 ? -6.f : 6.f) * (t / 2)
             };
-            Color glow = c; glow.a = tv[t].active ? 80 : 40;
+            Color glow = c; glow.a = 80;
             DrawCircleV(ep, ENTITY_R + 4, glow);
             DrawCircleV(ep, ENTITY_R, c);
             DrawCircleLines(ep.x, ep.y, ENTITY_R, DARKGRAY);
@@ -746,14 +749,34 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             DrawText(tl, (int)(ep.x - 4), (int)(ep.y - 8), 14, WHITE);
         }
 
-        /* per-traveler status strip */
+        /* button */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+
+            Color bc; const char *lbl;
+            if (all_done)     { bc = DARKGRAY;               lbl = "DONE";  }
+            else if (playing) { bc = (Color){210,60,60,255}; lbl = "STOP";  }
+            else              { bc = (Color){60,170,60,255};  lbl = "PLAY";  }
+
+            DrawRectangleRec(btn, bc);
+            DrawRectangleLinesEx(btn, 2, DARKGRAY);
+            int lw = MeasureText(lbl, 20);
+            DrawText(lbl,
+                     (int)(btn.x + btn.width/2 - lw/2),
+                     (int)(btn.y + btn.height/2 - 10),
+                     20, WHITE);
+        }
+
+        /* status strip */
         for (int t = 0; t < num_travelers; t++) {
             Color c = traveler_colors[t % 10];
-            const char *status = "waiting";
-            if (!tv[t].active)                      status = "done";
-            else if (tv[t].state == ANIM_MOVING)    status = "moving";
-            else if (tv[t].state == ANIM_AT_NODE)   status = "at node";
-            else if (tv[t].state == ANIM_DONE)      status = "arrived!";
+            const char *status = "idle";
+            if      (!tv[t].active)                  status = "arrived!";
+            else if (tv[t].state == ANIM_MOVING)     status = "moving";
+            else if (tv[t].state == ANIM_AT_NODE)    status = "at node";
+            else if (tv[t].state == ANIM_DONE)       status = "arrived!";
             char line[64];
             sprintf(line, "T%d [%d->%d]: %s", t,
                     tv[t].src_node, tv[t].dst_node, status);
@@ -762,26 +785,26 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             DrawText(line, WINDOW_W - 205, 52 + t * 22, 14, c);
         }
 
-        /* banner when all travelers have finished */
-        int all_done = 1;
-        for (int i = 0; i < num_travelers; i++)
-            if (tv[i].active) { all_done = 0; break; }
-
-        if (all_done) {
-            const char *banner = "  All travelers have arrived!  ";
-            int mw = MeasureText(banner, 24);
-            DrawRectangle(WINDOW_W/2 - mw/2 - 10, WINDOW_H/2 - 24,
-                          mw + 20, 48, Fade(BLACK, 0.65f));
-            DrawText(banner, WINDOW_W/2 - mw/2, WINDOW_H/2 - 12, 24, YELLOW);
+        /* all done banner */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+            if (all_done) {
+                const char *banner = "  All travelers have arrived!  ";
+                int mw = MeasureText(banner, 24);
+                DrawRectangle(WINDOW_W/2 - mw/2 - 10, WINDOW_H/2 - 24,
+                              mw + 20, 48, Fade(BLACK, 0.65f));
+                DrawText(banner, WINDOW_W/2 - mw/2,
+                         WINDOW_H/2 - 12, 24, YELLOW);
+            }
         }
 
         EndDrawing();
     }
 
-    /* signal any children still running (e.g. window closed early) */
-    for (int i = 0; i < num_travelers; i++) {
+    for (int i = 0; i < num_travelers; i++)
         if (tv[i].active) kill(tv[i].pid, SIGTERM);
-    }
 
     CloseWindow();
 }
