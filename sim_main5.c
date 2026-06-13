@@ -18,7 +18,7 @@ static void child_run(int fd, Graph* g, int src, int dst) {
     DijkstraResult res = dijkstra(g, src, dst);
 
     if (!res.found || res.path_len == 0) {
-        PipeMsg fin = { -1, 0 };
+        PipeMsg fin = { MSG_FINISHED, -1, -1 };
         write(fd, &fin, sizeof(fin));
         close(fd);
         exit(0);
@@ -26,7 +26,7 @@ static void child_run(int fd, Graph* g, int src, int dst) {
 
     for (int k = 0; k < res.path_len; k++) {
         int next = (k < res.path_len - 1) ? res.path[k + 1] : -1;
-        PipeMsg msg = { res.path[k], next };
+        PipeMsg msg = { MSG_AT_NODE, res.path[k], next };
         write(fd, &msg, sizeof(msg));
 
         if (next >= 0) {
@@ -37,7 +37,7 @@ static void child_run(int fd, Graph* g, int src, int dst) {
         }
     }
 
-    PipeMsg fin = { -1, 0 };
+    PipeMsg fin = { MSG_FINISHED, -1, -1 };
     write(fd, &fin, sizeof(fin));
     close(fd);
     exit(0);

@@ -43,35 +43,38 @@ static void child_run6(int fd, Graph* g, int src, int dst) {
         int cur  = res.path[k];
         int next = (k < res.path_len - 1) ? res.path[k + 1] : -1;
 
-        /* --- notify parent: waiting to enter cur --- */
+        /* 1. tell GUI we are waiting outside this node */
         PipeMsg wmsg = { MSG_WAITING, cur, next };
         write(fd, &wmsg, sizeof(wmsg));
 
-        /* --- acquire mutex for this node (blocks if occupied) --- */
+        /* 2. acquire mutex — blocks here if node is occupied */
         sem_wait(&shm->node_mutex[cur]);
 
-        /* --- notify parent: inside node now --- */
+        /* 3. tell GUI we entered the node */
         PipeMsg amsg = { MSG_AT_NODE, cur, next };
         write(fd, &amsg, sizeof(amsg));
 
-        /* --- stay in node for 1 second (critical section) --- */
-        struct timespec ts = { NODE_WAIT_MS / 1000,
-                               (NODE_WAIT_MS % 1000) * 1000000L };
+        /* 4. stay 1 second inside the node (critical section) */
+        struct timespec ts = { 1, 0 };
         nanosleep(&ts, NULL);
 
-        /* --- release mutex --- */
+        /* 5. release mutex */
         sem_post(&shm->node_mutex[cur]);
 
-        /* --- if there is a next node, also wait for travel time --- */
+        /* 6. if there is a next node, wait for travel animation to finish
+              travel time = edge_weight * JUMP_MS milliseconds            */
         if (next >= 0) {
             int w = g->matrix[cur][next];
             long travel_ms = (long)w * JUMP_MS;
-            struct timespec tt = { travel_ms / 1000,
-                                   (travel_ms % 1000) * 1000000L };
+            struct timespec tt = {
+                travel_ms / 1000,
+                (travel_ms % 1000) * 1000000L
+            };
             nanosleep(&tt, NULL);
         }
     }
 
+    /* signal done */
     PipeMsg fin = { MSG_FINISHED, -1, -1 };
     write(fd, &fin, sizeof(fin));
     close(fd);

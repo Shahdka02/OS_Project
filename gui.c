@@ -563,10 +563,10 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
                        int* t_src, int* t_dst, int num_travelers) {
 
     typedef struct {
-        int       active;        /* 1 until "finished" message received   */
+        int       active;
         AnimState state;
-        int       from_node;     /* currently animating FROM this node    */
-        int       to_node;       /* currently animating TO  this node     */
+        int       from_node;
+        int       to_node;
         int       jump;
         int       W;
         float     timer;
@@ -575,7 +575,7 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
         int       pipe_fd;
         int       src_node;
         int       dst_node;
-        int       vis_from[MAX_NODES]; /* edges already traversed */
+        int       vis_from[MAX_NODES];
         int       vis_to[MAX_NODES];
         int       n_vis;
     } Traveler5;
@@ -600,36 +600,46 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
         tv[i].n_vis     = 0;
     }
 
+    int playing = 0;
+
     InitWindow(WINDOW_W, WINDOW_H, "Graph Simulation - Milestone 5");
     SetTargetFPS(60);
+
+    Rectangle btn = { BTN_X, BTN_Y, BTN_W, BTN_H };
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
 
-        /* --- read one IPC message per traveler per frame (skip if MOVING) --- */
-        for (int i = 0; i < num_travelers; i++) {
-            if (!tv[i].active || tv[i].state == ANIM_MOVING) continue;
+        /* ---- button click ---- */
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
+            CheckCollisionPointRec(GetMousePosition(), btn)) {
+            playing = !playing;
+        }
 
-            PipeMsg msg;
-            ssize_t n = read(tv[i].pipe_fd, &msg, sizeof(msg));
+        /* ---- read IPC + animate only when playing ---- */
+        if (playing) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (!tv[i].active) continue;
+                if (tv[i].state == ANIM_MOVING) continue;
 
-            if (n == sizeof(msg)) {
-                if (msg.current_node < 0) {
-                    /* finished signal */
+                PipeMsg msg;
+                ssize_t n = read(tv[i].pipe_fd, &msg, sizeof(msg));
+                if (n != (ssize_t)sizeof(msg)) continue;
+
+                if (msg.type == MSG_FINISHED) {
                     printf("[PID=%d] finished\n", (int)tv[i].pid);
                     fflush(stdout);
                     tv[i].active = 0;
-                } else if (msg.next_node < 0) {
-                    /* arrived at destination */
+                } else if (msg.type == MSG_AT_NODE && msg.next_node < 0) {
                     printf("[PID=%d] arrived at node %d | DESTINATION\n",
                            (int)tv[i].pid, msg.current_node);
                     fflush(stdout);
                     tv[i].from_node = msg.current_node;
                     tv[i].entity    = pos[msg.current_node];
                     tv[i].state     = ANIM_DONE;
-                } else {
-                    /* arrived at intermediate node – start moving to next */
-                    printf("[PID=%d] arrived at node %d | next node: %d\n",
+                    tv[i].active    = 0;
+                } else if (msg.type == MSG_AT_NODE) {
+                    printf("[PID=%d] at node %d | next: %d\n",
                            (int)tv[i].pid, msg.current_node, msg.next_node);
                     fflush(stdout);
                     if (tv[i].n_vis < MAX_NODES) {
@@ -640,58 +650,52 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
                     tv[i].from_node = msg.current_node;
                     tv[i].to_node   = msg.next_node;
                     tv[i].W         = g->matrix[msg.current_node][msg.next_node];
+                    if (tv[i].W < 1) tv[i].W = 1;
                     tv[i].jump      = 0;
                     tv[i].timer     = 0.f;
                     tv[i].entity    = pos[msg.current_node];
                     tv[i].state     = ANIM_MOVING;
                 }
-            } else if (n == 0) {
-                /* pipe closed unexpectedly – treat as finished */
-                tv[i].active = 0;
             }
-        }
 
-        /* --- animation update (same jump-based logic as milestone 4) --- */
-        for (int i = 0; i < num_travelers; i++) {
-            if (tv[i].state != ANIM_MOVING) continue;
+            /* ---- animation update ---- */
+            for (int i = 0; i < num_travelers; i++) {
+                if (tv[i].state != ANIM_MOVING) continue;
 
-            tv[i].timer += dt;
-
-            if (tv[i].timer >= JUMP_SEC) {
-                tv[i].timer -= JUMP_SEC;
-                tv[i].jump++;
-
-                if (tv[i].jump >= tv[i].W) {
-                    /* finished crossing the edge visually */
-                    tv[i].entity    = pos[tv[i].to_node];
-                    tv[i].from_node = tv[i].to_node;
-                    tv[i].state     = ANIM_AT_NODE; /* wait for next IPC msg */
-                    tv[i].jump      = 0;
-                    tv[i].timer     = 0.f;
-                } else {
-                    Vector2 from = pos[tv[i].from_node];
-                    Vector2 to   = pos[tv[i].to_node];
-                    tv[i].entity = v2lerp(from, to,
-                        (float)tv[i].jump / (float)tv[i].W);
-                }
-            } else {
+                tv[i].timer += dt;
                 Vector2 from = pos[tv[i].from_node];
                 Vector2 to   = pos[tv[i].to_node];
-                float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
-                          / (float)tv[i].W;
-                if (t > 1.f) t = 1.f;
-                tv[i].entity = v2lerp(from, to, t);
+
+                if (tv[i].timer >= JUMP_SEC) {
+                    tv[i].timer -= JUMP_SEC;
+                    tv[i].jump++;
+                    if (tv[i].jump >= tv[i].W) {
+                        tv[i].entity    = to;
+                        tv[i].from_node = tv[i].to_node;
+                        tv[i].jump      = 0;
+                        tv[i].state     = ANIM_AT_NODE;
+                        tv[i].timer     = 0.f;
+                    } else {
+                        tv[i].entity = v2lerp(from, to,
+                            (float)tv[i].jump / (float)tv[i].W);
+                    }
+                } else {
+                    float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
+                              / (float)tv[i].W;
+                    if (t > 1.f) t = 1.f;
+                    tv[i].entity = v2lerp(from, to, t);
+                }
             }
         }
 
-        /* --- draw --- */
+        /* ---- draw ---- */
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
         DrawText("Milestone 5 - IPC pipes: each traveler computes its own path",
                  10, 10, 15, DARKGRAY);
 
-        /* base edges */
+        /* edges */
         for (int i = 0; i < g->n; i++) {
             for (int j = 0; j < g->n; j++) {
                 if (g->matrix[i][j] == -1) continue;
@@ -705,14 +709,13 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             }
         }
 
-        /* highlight edges each traveler has already crossed */
+        /* traversed edges */
         for (int t = 0; t < num_travelers; t++) {
             Color pc = traveler_colors[t % 10];
             pc.a = 160;
-            for (int k = 0; k < tv[t].n_vis; k++) {
+            for (int k = 0; k < tv[t].n_vis; k++)
                 draw_arrow(pos[tv[t].vis_from[k]],
                            pos[tv[t].vis_to[k]], pc, 3.0f);
-            }
         }
 
         /* nodes */
@@ -722,22 +725,22 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             char lbl[4];
             sprintf(lbl, "%d", i);
             int tw = MeasureText(lbl, 18);
-            DrawText(lbl, (int)(pos[i].x - tw/2), (int)(pos[i].y - 9), 18, BLACK);
+            DrawText(lbl, (int)(pos[i].x - tw/2),
+                     (int)(pos[i].y - 9), 18, BLACK);
         }
 
-        /* traveler circles */
+        /* travelers */
         for (int t = 0; t < num_travelers; t++) {
-            /* skip only if finished with no path (never moved) */
             if (!tv[t].active && tv[t].state == ANIM_IDLE) continue;
 
             Color c = traveler_colors[t % 10];
-            if (!tv[t].active) c.a = 160; /* faded when fully done */
+            if (!tv[t].active) c.a = 160;
 
             Vector2 ep = {
                 tv[t].entity.x + (t % 2 == 0 ? -6.f : 6.f) * (t / 2),
                 tv[t].entity.y + (t % 2 == 0 ? -6.f : 6.f) * (t / 2)
             };
-            Color glow = c; glow.a = tv[t].active ? 80 : 40;
+            Color glow = c; glow.a = 80;
             DrawCircleV(ep, ENTITY_R + 4, glow);
             DrawCircleV(ep, ENTITY_R, c);
             DrawCircleLines(ep.x, ep.y, ENTITY_R, DARKGRAY);
@@ -746,14 +749,34 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             DrawText(tl, (int)(ep.x - 4), (int)(ep.y - 8), 14, WHITE);
         }
 
-        /* per-traveler status strip */
+        /* button */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+
+            Color bc; const char *lbl;
+            if (all_done)     { bc = DARKGRAY;               lbl = "DONE";  }
+            else if (playing) { bc = (Color){210,60,60,255}; lbl = "STOP";  }
+            else              { bc = (Color){60,170,60,255};  lbl = "PLAY";  }
+
+            DrawRectangleRec(btn, bc);
+            DrawRectangleLinesEx(btn, 2, DARKGRAY);
+            int lw = MeasureText(lbl, 20);
+            DrawText(lbl,
+                     (int)(btn.x + btn.width/2 - lw/2),
+                     (int)(btn.y + btn.height/2 - 10),
+                     20, WHITE);
+        }
+
+        /* status strip */
         for (int t = 0; t < num_travelers; t++) {
             Color c = traveler_colors[t % 10];
-            const char *status = "waiting";
-            if (!tv[t].active)                      status = "done";
-            else if (tv[t].state == ANIM_MOVING)    status = "moving";
-            else if (tv[t].state == ANIM_AT_NODE)   status = "at node";
-            else if (tv[t].state == ANIM_DONE)      status = "arrived!";
+            const char *status = "idle";
+            if      (!tv[t].active)                  status = "arrived!";
+            else if (tv[t].state == ANIM_MOVING)     status = "moving";
+            else if (tv[t].state == ANIM_AT_NODE)    status = "at node";
+            else if (tv[t].state == ANIM_DONE)       status = "arrived!";
             char line[64];
             sprintf(line, "T%d [%d->%d]: %s", t,
                     tv[t].src_node, tv[t].dst_node, status);
@@ -762,26 +785,26 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             DrawText(line, WINDOW_W - 205, 52 + t * 22, 14, c);
         }
 
-        /* banner when all travelers have finished */
-        int all_done = 1;
-        for (int i = 0; i < num_travelers; i++)
-            if (tv[i].active) { all_done = 0; break; }
-
-        if (all_done) {
-            const char *banner = "  All travelers have arrived!  ";
-            int mw = MeasureText(banner, 24);
-            DrawRectangle(WINDOW_W/2 - mw/2 - 10, WINDOW_H/2 - 24,
-                          mw + 20, 48, Fade(BLACK, 0.65f));
-            DrawText(banner, WINDOW_W/2 - mw/2, WINDOW_H/2 - 12, 24, YELLOW);
+        /* all done banner */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+            if (all_done) {
+                const char *banner = "  All travelers have arrived!  ";
+                int mw = MeasureText(banner, 24);
+                DrawRectangle(WINDOW_W/2 - mw/2 - 10, WINDOW_H/2 - 24,
+                              mw + 20, 48, Fade(BLACK, 0.65f));
+                DrawText(banner, WINDOW_W/2 - mw/2,
+                         WINDOW_H/2 - 12, 24, YELLOW);
+            }
         }
 
         EndDrawing();
     }
 
-    /* signal any children still running (e.g. window closed early) */
-    for (int i = 0; i < num_travelers; i++) {
+    for (int i = 0; i < num_travelers; i++)
         if (tv[i].active) kill(tv[i].pid, SIGTERM);
-    }
 
     CloseWindow();
 }
@@ -794,39 +817,36 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
  * MSG_FINISHED → traveler removed from display
  * ============================================================ */
 
-typedef enum {
-    T6_IDLE,      /* not started yet                  */
-    T6_TRAVELING, /* moving along an edge             */
-    T6_WAITING,   /* blocked outside a node           */
-    T6_AT_NODE,   /* inside the node (critical sec.)  */
-    T6_DONE       /* reached destination              */
-} T6State;
-
-typedef struct {
-    int      active;
-    T6State  state;
-    int      cur_node;   /* node currently at / waiting for  */
-    int      next_node;
-    int      jump;
-    int      W;
-    float    timer;
-    Vector2  entity;
-    pid_t    pid;
-    int      pipe_fd;
-    int      src_node;
-    int      dst_node;
-    /* trail of edges already traversed */
-    int      vis_from[MAX_NODES];
-    int      vis_to[MAX_NODES];
-    int      n_vis;
-} Traveler6;
-
-/* Yellow color for waiting travelers */
-#define WAITING_COLOR  ((Color){255, 220, 0, 255})
-#define WAITING_GLOW   ((Color){255, 220, 0, 80})
-
 void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
                        int* t_src, int* t_dst, int num_travelers) {
+
+    typedef enum {
+        T6_IDLE,
+        T6_TRAVELING,
+        T6_WAITING,
+        T6_AT_NODE,
+        T6_DONE
+    } T6State;
+
+    typedef struct {
+        int      active;
+        T6State  state;
+        int      from_node;
+        int      to_node;
+        int      jump;
+        int      W;
+        float    timer;
+        Vector2  entity;
+        pid_t    pid;
+        int      pipe_fd;
+        int      src_node;
+        int      dst_node;
+        int      vis_from[MAX_NODES];
+        int      vis_to[MAX_NODES];
+        int      n_vis;
+    } Traveler6;
+
+    #define WAITING_COLOR ((Color){255, 220, 0, 255})
 
     Vector2 pos[MAX_NODES];
     get_node_positions(g->n, pos);
@@ -835,8 +855,8 @@ void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
     for (int i = 0; i < num_travelers; i++) {
         tv[i].active    = 1;
         tv[i].state     = T6_IDLE;
-        tv[i].cur_node  = t_src[i];
-        tv[i].next_node = -1;
+        tv[i].from_node = t_src[i];
+        tv[i].to_node   = -1;
         tv[i].jump      = 0;
         tv[i].W         = 0;
         tv[i].timer     = 0.f;
@@ -848,125 +868,137 @@ void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
         tv[i].n_vis     = 0;
     }
 
+    int playing = 0;
+
     InitWindow(WINDOW_W, WINDOW_H, "Graph Simulation - Milestone 6 (Mutex)");
     SetTargetFPS(60);
+
+    Rectangle btn = { BTN_X, BTN_Y, BTN_W, BTN_H };
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
 
-        /* --- read IPC messages from each traveler --- */
-        for (int i = 0; i < num_travelers; i++) {
-            if (!tv[i].active) continue;
-            /* read all available messages this frame */
-            PipeMsg msg;
-            while (read(tv[i].pipe_fd, &msg, sizeof(msg)) == sizeof(msg)) {
+        /* ---- button click ---- */
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
+            CheckCollisionPointRec(GetMousePosition(), btn)) {
+            playing = !playing;
+        }
+
+        /* ---- read IPC + animate only when playing ---- */
+        if (playing) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (!tv[i].active) continue;
+                if (tv[i].state == T6_TRAVELING) continue;
+
+                PipeMsg msg;
+                ssize_t nr = read(tv[i].pipe_fd, &msg, sizeof(msg));
+                if (nr != (ssize_t)sizeof(msg)) continue;
+
                 switch (msg.type) {
 
                     case MSG_WAITING:
-                        /* blocked outside msg.current_node */
                         tv[i].state     = T6_WAITING;
-                        tv[i].cur_node  = msg.current_node;
-                        tv[i].next_node = msg.next_node;
-                        /* position slightly outside the target node */
+                        tv[i].to_node   = msg.current_node;
+                        /* sit 30% of the way between current pos and target */
                         {
                             Vector2 target = pos[msg.current_node];
-                            /* offset toward previous node so it looks
-                               like it stopped just before entering    */
-                            int prev = tv[i].cur_node;
-                            Vector2 from = (tv[i].n_vis > 0)
-                                ? pos[tv[i].vis_from[tv[i].n_vis - 1]]
-                                : pos[tv[i].src_node];
-                            tv[i].entity = v2lerp(target, from, 0.3f);
+                            tv[i].entity   = v2lerp(tv[i].entity, target, 0.7f);
                         }
                         printf("[PID=%d] WAITING outside node %d\n",
                                (int)tv[i].pid, msg.current_node);
                         fflush(stdout);
                         break;
 
-                    case MSG_AT_NODE:
-                        /* acquired mutex — now inside the node */
-                        tv[i].state    = T6_AT_NODE;
-                        tv[i].cur_node = msg.current_node;
-                        tv[i].entity   = pos[msg.current_node];
-                        /* record traversed edge */
-                        if (tv[i].n_vis > 0) {
-                            int last = tv[i].vis_from[tv[i].n_vis - 1];
-                            if (last != msg.current_node &&
-                                tv[i].n_vis < MAX_NODES) {
-                                tv[i].vis_from[tv[i].n_vis] = last;
-                                tv[i].vis_to  [tv[i].n_vis] = msg.current_node;
+                   case MSG_AT_NODE:
+
+                        printf("[DEBUG] AT_NODE %d, next=%d\n",
+                            msg.current_node, msg.next_node);
+                        fflush(stdout);
+
+                        tv[i].entity = pos[msg.current_node];
+                        tv[i].from_node = msg.current_node;
+
+                        if (msg.next_node >= 0) {
+
+                            /* Record colored path edge */
+                            if (tv[i].n_vis < MAX_NODES) {
+                                tv[i].vis_from[tv[i].n_vis] = msg.current_node;
+                                tv[i].vis_to[tv[i].n_vis]   = msg.next_node;
                                 tv[i].n_vis++;
                             }
+
+                            tv[i].to_node = msg.next_node;
+                            tv[i].W = g->matrix[msg.current_node][msg.next_node];
+
+                            if (tv[i].W < 1)
+                                tv[i].W = 1;
+
+                            tv[i].jump  = 0;
+                            tv[i].timer = 0.f;
+                            tv[i].state = T6_TRAVELING;
+
                         } else {
-                            /* first node: just record position */
+
+                            tv[i].state  = T6_DONE;
+                            tv[i].active = 0;
                         }
-                        /* start edge travel animation toward next node */
-                        if (msg.next_node >= 0) {
-                            tv[i].next_node = msg.next_node;
-                            tv[i].W         = g->matrix[msg.current_node]
-                                                       [msg.next_node];
-                            tv[i].jump      = 0;
-                            tv[i].timer     = 0.f;
-                            tv[i].state     = T6_TRAVELING;
-                        }
+
                         printf("[PID=%d] ENTERED node %d\n",
-                               (int)tv[i].pid, msg.current_node);
+                            (int)tv[i].pid,
+                            msg.current_node);
                         fflush(stdout);
+
                         break;
 
                     case MSG_FINISHED:
-                        /* traveler is done */
                         tv[i].state  = T6_DONE;
                         tv[i].active = 0;
                         printf("[PID=%d] FINISHED\n", (int)tv[i].pid);
                         fflush(stdout);
                         break;
 
-                    default:
-                        break;
+                    default: break;
                 }
             }
-        }
 
-        /* --- animation: smooth movement along edges --- */
-        for (int i = 0; i < num_travelers; i++) {
-            if (tv[i].state != T6_TRAVELING) continue;
+            /* ---- animation update ---- */
+            for (int i = 0; i < num_travelers; i++) {
+                if (tv[i].state != T6_TRAVELING) continue;
 
-            tv[i].timer += dt;
-            Vector2 from = pos[tv[i].cur_node];
-            Vector2 to   = pos[tv[i].next_node];
+                tv[i].timer += dt;
+                Vector2 from = pos[tv[i].from_node];
+                Vector2 to   = pos[tv[i].to_node];
 
-            if (tv[i].W <= 0) tv[i].W = 1;
-
-            if (tv[i].timer >= JUMP_SEC) {
-                tv[i].timer -= JUMP_SEC;
-                tv[i].jump++;
-                if (tv[i].jump >= tv[i].W) {
-                    /* arrived visually — wait for MSG_WAITING or MSG_AT_NODE */
-                    tv[i].entity    = to;
-                    tv[i].cur_node  = tv[i].next_node;
-                    tv[i].jump      = 0;
-                    tv[i].state     = T6_IDLE;
+                if (tv[i].timer >= JUMP_SEC) {
+                    tv[i].timer -= JUMP_SEC;
+                    tv[i].jump++;
+                    if (tv[i].jump >= tv[i].W) {
+                        tv[i].entity    = to;
+                        tv[i].from_node = tv[i].to_node;
+                        tv[i].jump      = 0;
+                        tv[i].state     = T6_IDLE;
+                        tv[i].timer     = 0.f;
+                    } else {
+                        tv[i].entity = v2lerp(from, to,
+                            (float)tv[i].jump / (float)tv[i].W);
+                    }
                 } else {
-                    tv[i].entity = v2lerp(from, to,
-                        (float)tv[i].jump / tv[i].W);
+                    float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
+                              / (float)tv[i].W;
+                    if (t > 1.f) t = 1.f;
+                    tv[i].entity = v2lerp(from, to, t);
                 }
-            } else {
-                float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
-                          / (float)tv[i].W;
-                if (t > 1.f) t = 1.f;
-                tv[i].entity = v2lerp(from, to, t);
             }
         }
 
-        /* --- draw --- */
+        /* ---- draw ---- */
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
-        DrawText("Milestone 6 – Mutex: at most one traveler per node | YELLOW = waiting",
+        DrawText("Milestone 6 - Mutex: at most one traveler per node | YELLOW = waiting",
                  10, 10, 15, DARKGRAY);
 
-        /* base edges */
+        /* edges */
         for (int i = 0; i < g->n; i++) {
             for (int j = 0; j < g->n; j++) {
                 if (g->matrix[i][j] == -1) continue;
@@ -980,91 +1012,93 @@ void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
             }
         }
 
-        /* highlight traversed edges per traveler */
+        /* traversed edges */
         for (int t = 0; t < num_travelers; t++) {
             Color pc = traveler_colors[t % 10];
             pc.a = 160;
-            for (int k = 0; k < tv[t].n_vis; k++) {
+            for (int k = 0; k < tv[t].n_vis; k++)
                 draw_arrow(pos[tv[t].vis_from[k]],
                            pos[tv[t].vis_to[k]], pc, 3.0f);
-            }
         }
 
-        /* nodes — highlight occupied nodes with a red ring */
+        /* nodes — red if occupied, amber if contested */
         for (int i = 0; i < g->n; i++) {
-            /* check if any traveler is AT this node */
-            int occupied = 0;
+            int occupied = 0, contested = 0;
             for (int t = 0; t < num_travelers; t++) {
-                if (tv[t].active &&
-                    tv[t].state == T6_AT_NODE &&
-                    tv[t].cur_node == i) { occupied = 1; break; }
+                if (!tv[t].active) continue;
+                if ((tv[t].state == T6_AT_NODE ||
+                     tv[t].state == T6_TRAVELING) &&
+                     tv[t].from_node == i) occupied = 1;
+                if (tv[t].state == T6_WAITING &&
+                    tv[t].to_node == i) contested = 1;
             }
-            /* check if any traveler is WAITING for this node */
-            int contested = 0;
-            for (int t = 0; t < num_travelers; t++) {
-                if (tv[t].active &&
-                    tv[t].state == T6_WAITING &&
-                    tv[t].cur_node == i) { contested = 1; break; }
-            }
-
             Color nc = SKYBLUE;
-            if (occupied)  nc = (Color){255, 100, 100, 255}; /* red: locked  */
-            if (contested && !occupied) nc = (Color){255, 200, 80, 255}; /* amber: contested */
+            if (occupied)        nc = (Color){255, 100, 100, 255};
+            else if (contested)  nc = (Color){255, 200,  80, 255};
 
             DrawCircleV(pos[i], NODE_RADIUS, nc);
-            DrawCircleLines(pos[i].x, pos[i].y, NODE_RADIUS, DARKGRAY);
-
-            /* extra ring when occupied */
             if (occupied)
                 DrawCircleLines(pos[i].x, pos[i].y,
                                 NODE_RADIUS + 5, RED);
+            DrawCircleLines(pos[i].x, pos[i].y, NODE_RADIUS, DARKGRAY);
 
-            char lbl[4];
-            sprintf(lbl, "%d", i);
+            char lbl[4]; sprintf(lbl, "%d", i);
             int tw = MeasureText(lbl, 18);
-            DrawText(lbl,
-                     (int)(pos[i].x - tw/2),
-                     (int)(pos[i].y - 9),
-                     18, BLACK);
+            DrawText(lbl, (int)(pos[i].x - tw/2),
+                     (int)(pos[i].y - 9), 18, BLACK);
         }
 
-        /* traveler circles */
+        /* travelers */
         for (int t = 0; t < num_travelers; t++) {
-            if (!tv[t].active && tv[t].state != T6_DONE) continue;
-            if (tv[t].state == T6_IDLE && !tv[t].active) continue;
+            if (!tv[t].active && tv[t].state == T6_IDLE) continue;
 
-            /* waiting travelers are drawn in yellow */
             Color c = (tv[t].state == T6_WAITING)
                       ? WAITING_COLOR
                       : traveler_colors[t % 10];
+            if (!tv[t].active) c.a = 160;
 
-            if (!tv[t].active) c.a = 140; /* faded when done */
-
-            /* small offset so overlapping travelers are visible */
             Vector2 ep = {
                 tv[t].entity.x + (t % 2 == 0 ? -7.f : 7.f) * (t / 2 + 1),
                 tv[t].entity.y + (t % 2 == 0 ? -7.f : 7.f) * (t / 2 + 1)
             };
-
-            Color glow = c; glow.a = tv[t].active ? 80 : 30;
+            Color glow = c; glow.a = 80;
             DrawCircleV(ep, ENTITY_R + 4, glow);
             DrawCircleV(ep, ENTITY_R, c);
             DrawCircleLines(ep.x, ep.y, ENTITY_R,
-                            (tv[t].state == T6_WAITING) ? YELLOW : DARKGRAY);
+                (tv[t].state == T6_WAITING) ? YELLOW : DARKGRAY);
             DrawCircleV(ep, 4, WHITE);
-
             char tl[4]; sprintf(tl, "%d", t);
             DrawText(tl, (int)(ep.x - 4), (int)(ep.y - 8), 14, BLACK);
         }
 
-        /* per-traveler status strip */
+        /* button */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+
+            Color bc; const char *lbl;
+            if (all_done)     { bc = DARKGRAY;               lbl = "DONE"; }
+            else if (playing) { bc = (Color){210,60,60,255}; lbl = "STOP"; }
+            else              { bc = (Color){60,170,60,255};  lbl = "PLAY"; }
+
+            DrawRectangleRec(btn, bc);
+            DrawRectangleLinesEx(btn, 2, DARKGRAY);
+            int lw = MeasureText(lbl, 20);
+            DrawText(lbl,
+                     (int)(btn.x + btn.width/2 - lw/2),
+                     (int)(btn.y + btn.height/2 - 10),
+                     20, WHITE);
+        }
+
+        /* status strip */
         for (int t = 0; t < num_travelers; t++) {
             Color c = traveler_colors[t % 10];
-            const char* status = "idle";
-            if      (tv[t].state == T6_TRAVELING) status = "moving";
-            else if (tv[t].state == T6_WAITING)   status = "WAITING (blocked)";
-            else if (tv[t].state == T6_AT_NODE)   status = "in node (locked)";
-            else if (tv[t].state == T6_DONE)       status = "arrived!";
+            const char *status = "idle";
+            if      (!tv[t].active)                   status = "arrived!";
+            else if (tv[t].state == T6_TRAVELING)     status = "moving";
+            else if (tv[t].state == T6_WAITING)       status = "WAITING (blocked)";
+            else if (tv[t].state == T6_AT_NODE)       status = "in node";
             char line[64];
             sprintf(line, "T%d [%d->%d]: %s", t,
                     tv[t].src_node, tv[t].dst_node, status);
@@ -1081,10 +1115,24 @@ void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
         DrawCircle(20, WINDOW_H - 30, 8, traveler_colors[0]);
         DrawText("traveler moving",  34, WINDOW_H - 37, 13, DARKGRAY);
 
+        /* all done banner */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+            if (all_done) {
+                const char *banner = "  All travelers have arrived!  ";
+                int mw = MeasureText(banner, 24);
+                DrawRectangle(WINDOW_W/2 - mw/2 - 10, WINDOW_H/2 - 24,
+                              mw + 20, 48, Fade(BLACK, 0.65f));
+                DrawText(banner, WINDOW_W/2 - mw/2,
+                         WINDOW_H/2 - 12, 24, YELLOW);
+            }
+        }
+
         EndDrawing();
     }
 
-    /* signal any children still running */
     for (int i = 0; i < num_travelers; i++)
         if (tv[i].active) kill(tv[i].pid, SIGTERM);
 
