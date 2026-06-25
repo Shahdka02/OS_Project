@@ -1,11 +1,11 @@
 CC     = gcc
 CFLAGS = -Wall -Wextra -g
 
-# MAcOS
-# RAYLIB_INCLUDE = -I/opt/homebrew/Cellar/raylib/5.5/include
-# RAYLIB_LIBS    = -L/opt/homebrew/Cellar/raylib/5.5/lib -lraylib -lm
+# macOS (uncomment and comment Linux lines below if running locally on Mac)
+# RAYLIB_INCLUDE = -I/opt/homebrew/include
+# RAYLIB_LIBS    = -L/opt/homebrew/lib -lraylib -lm
 
-# Windows
+# Linux
 RAYLIB_INCLUDE = -I/usr/local/include
 RAYLIB_LIBS = -L/usr/local/lib -lraylib \
               -lGL -lm -lpthread -ldl -lrt \
@@ -29,6 +29,9 @@ milestone5: sim_main5.o graph.o dijkstra.o gui.o
 milestone6: sim_main6.o graph.o dijkstra.o gui.o
 	$(CC) $(CFLAGS) -o sim sim_main6.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
 
+milestone7: sim_main7.o graph.o dijkstra.o gui.o
+	$(CC) $(CFLAGS) -o sim sim_main7.o graph.o dijkstra.o gui.o $(RAYLIB_LIBS)
+
 main.o: main.c graph.h dijkstra.h
 	$(CC) $(CFLAGS) -c main.c
 
@@ -43,6 +46,9 @@ sim_main5.o: sim_main5.c graph.h dijkstra.h gui.h
 
 sim_main6.o: sim_main6.c graph.h dijkstra.h gui.h
 	$(CC) $(CFLAGS) $(RAYLIB_INCLUDE) -c sim_main6.c
+
+sim_main7.o: sim_main7.c graph.h dijkstra.h gui.h
+	$(CC) $(CFLAGS) $(RAYLIB_INCLUDE) -c sim_main7.c
 
 graph.o: graph.c graph.h
 	$(CC) $(CFLAGS) -c graph.c

@@ -17,7 +17,8 @@ typedef enum {
     MSG_MOVING,    /* traveling toward next_node                  */
     MSG_WAITING,   /* blocked outside next_node (mutex taken)     */
     MSG_AT_NODE,   /* acquired mutex, now inside current_node     */
-    MSG_FINISHED   /* current_node = -1, traveler done            */
+    MSG_FINISHED,  /* current_node = -1, traveler done            */
+    MSG_LEAVING    /* traveler has released the node (milestone 7) */
 } MsgType;
 
 // IPC message sent from child to parent via pipe (milestone 5).
@@ -29,6 +30,15 @@ typedef struct {
     int next_node;
 } PipeMsg;
 
+/* Milestone 7: extended message carrying scheduling priority.
+   priority = remaining total path weight; used by SJF to order waiters. */
+typedef struct {
+    MsgType type;
+    int current_node;
+    int next_node;
+    int priority;
+} PipeMsg7;
+
 // Milestone 5: IPC-driven multi-traveler GUI.
 // Each child computes its own path and reports position via pipe fds[i].
 void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
@@ -37,5 +47,14 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
 /* Milestone 6: mutual exclusion – at most one traveler per node */
 void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
                        int* t_src, int* t_dst, int num_travelers);
+
+/* Milestone 7: parent-driven scheduling (FCFS or SJF).
+   report_fds[i] – parent reads child reports (child→parent pipe read end).
+   grant_wfds[i] – parent writes grant signal  (parent→child pipe write end).
+   sched_name    – "FCFS" or "SJF". */
+void draw_graph_multi7(Graph* g, pid_t* pids,
+                       int* report_fds, int* grant_wfds,
+                       int* t_src, int* t_dst, int num_travelers,
+                       const char* sched_name);
 
 #endif

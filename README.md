@@ -59,3 +59,33 @@ Adds mutual exclusion: at most one traveler per node at any time. Travelers wait
 [PID=<pid>] ENTERED node <X>
 [PID=<pid>] FINISHED
 ```
+
+## Milestone 7
+**Compile:** `make milestone7`
+**Run (FCFS):** `./sim -schd fcfs <file_name>`
+**Run (SJF):** `./sim -schd sjf <file_name>`
+
+Replaces the semaphore-based mutual exclusion with parent-driven scheduling. The parent (GUI process) maintains a per-node wait queue and wakes exactly the next chosen traveler via a dedicated grant pipe. Two algorithms are supported, selectable at runtime with `-schd`:
+
+- **FCFS (First-Come-First-Served):** Travelers enter a node in the order their request arrived at the parent. Fair, but ignores how far each traveler still has to travel.
+- **SJF (Shortest-Job-First):** Among all travelers waiting for the same node, the one with the smallest remaining path weight is granted entry first. This minimizes the time until the "nearly done" traveler finishes, reducing average completion time.
+
+**IPC mechanism:** Two anonymous pipes per traveler — a *report pipe* (child → parent, carries `PipeMsg7` structs) and a *grant pipe* (parent → child, carries a 1-byte unlock signal). Children block on the grant pipe after requesting a node; the parent unblocks exactly the chosen child when the node is free.
+
+**GUI indicators:**
+- Scheduler name shown as a centered blue banner
+- Queue size badge (`q:N`) drawn above each contested node
+- Yellow traveler = blocked, waiting for grant
+- Red node = occupied; amber node = contested (queue > 0)
+
+**Log format:**
+```
+[PID=<pid>] WAITING for node <X> (priority=<remaining_weight>)
+[PID=<pid>] ENTERED node <X>
+[PID=<pid>] LEAVING node <X> -> <Y>
+[PID=<pid>] FINISHED
+```
+
+**Algorithm comparison (using `test4.txt`):**
+
+`test4.txt` has three travelers that share intermediate nodes (e.g., nodes 1 and 3). With FCFS, the traveler that happened to request a shared node first gets in — regardless of how much journey they have left. With SJF, the traveler closest to their destination is always prioritized, so shorter remaining journeys finish sooner. On the same input, SJF typically reduces the total time before all travelers arrive compared to FCFS when travelers have significantly different remaining distances at the moment of contention.

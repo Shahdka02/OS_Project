@@ -1138,3 +1138,413 @@ void draw_graph_multi6(Graph* g, pid_t* pids, int* fds,
 
     CloseWindow();
 }
+
+/* ============================================================
+ * Milestone 7 – parent-driven scheduling (FCFS or SJF)
+ *
+ * Children send PipeMsg7 reports; parent decides who enters each
+ * node and writes a 1-byte grant to unlock the chosen child.
+ *
+ * FCFS: first-come-first-served (arrival serial number).
+ * SJF : shortest remaining path weight gets priority.
+ * ============================================================ */
+
+/* Per-node scheduling state used by draw_graph_multi7. */
+typedef struct {
+    int occupant;                      /* -1 = free, else traveler index */
+    int queue_idx[MAX_TRAVELERS];      /* traveler indices in wait queue  */
+    int queue_pri[MAX_TRAVELERS];      /* remaining weight (SJF key)      */
+    int queue_ser[MAX_TRAVELERS];      /* arrival serial   (FCFS key)     */
+    int qsize;
+} M7NodeSched;
+
+/* Grant entry to the next eligible traveler waiting for node n. */
+static void m7_grant_next(M7NodeSched* ns, int node,
+                           int* grant_wfds, int is_fcfs) {
+    if (ns[node].occupant != -1 || ns[node].qsize == 0) return;
+
+    int best = 0;
+    for (int q = 1; q < ns[node].qsize; q++) {
+        int key_best = is_fcfs ? ns[node].queue_ser[best]
+                               : ns[node].queue_pri[best];
+        int key_q    = is_fcfs ? ns[node].queue_ser[q]
+                               : ns[node].queue_pri[q];
+        if (key_q < key_best) best = q;
+    }
+
+    int tidx = ns[node].queue_idx[best];
+    ns[node].occupant = tidx;
+
+    /* Remove selected entry from queue. */
+    for (int q = best; q < ns[node].qsize - 1; q++) {
+        ns[node].queue_idx[q] = ns[node].queue_idx[q + 1];
+        ns[node].queue_pri[q] = ns[node].queue_pri[q + 1];
+        ns[node].queue_ser[q] = ns[node].queue_ser[q + 1];
+    }
+    ns[node].qsize--;
+
+    char go = 1;
+    write(grant_wfds[tidx], &go, 1);
+}
+
+void draw_graph_multi7(Graph* g, pid_t* pids,
+                       int* report_fds, int* grant_wfds,
+                       int* t_src, int* t_dst, int num_travelers,
+                       const char* sched_name) {
+
+    typedef enum {
+        T7_IDLE,
+        T7_WAITING,
+        T7_AT_NODE,
+        T7_TRAVELING,
+        T7_DONE
+    } T7State;
+
+    typedef struct {
+        int      active;
+        T7State  state;
+        int      from_node;
+        int      to_node;
+        int      jump;
+        int      W;
+        float    timer;
+        Vector2  entity;
+        pid_t    pid;
+        int      src_node;
+        int      dst_node;
+        int      vis_from[MAX_NODES];
+        int      vis_to  [MAX_NODES];
+        int      n_vis;
+    } Traveler7;
+
+    #define WAITING7_COLOR ((Color){255, 220, 0, 255})
+
+    int is_fcfs = (strcmp(sched_name, "FCFS") == 0);
+    int serial_counter = 0;
+
+    Vector2 pos[MAX_NODES];
+    get_node_positions(g->n, pos);
+
+    Traveler7    tv[MAX_TRAVELERS];
+    M7NodeSched  ns[MAX_NODES];
+
+    for (int i = 0; i < num_travelers; i++) {
+        tv[i].active    = 1;
+        tv[i].state     = T7_IDLE;
+        tv[i].from_node = t_src[i];
+        tv[i].to_node   = -1;
+        tv[i].jump      = 0;
+        tv[i].W         = 0;
+        tv[i].timer     = 0.f;
+        tv[i].entity    = pos[t_src[i]];
+        tv[i].pid       = pids[i];
+        tv[i].src_node  = t_src[i];
+        tv[i].dst_node  = t_dst[i];
+        tv[i].n_vis     = 0;
+    }
+    for (int i = 0; i < g->n; i++) {
+        ns[i].occupant = -1;
+        ns[i].qsize    = 0;
+    }
+
+    int playing = 0;
+
+    char title[64];
+    snprintf(title, sizeof(title),
+             "Graph Simulation - Milestone 7 (%s)", sched_name);
+    InitWindow(WINDOW_W, WINDOW_H, title);
+    SetTargetFPS(60);
+
+    Rectangle btn = { BTN_X, BTN_Y, BTN_W, BTN_H };
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        /* ---- button click ---- */
+        if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON) &&
+            CheckCollisionPointRec(GetMousePosition(), btn)) {
+            playing = !playing;
+        }
+
+        /* ---- read IPC messages and drive scheduler ---- */
+        if (playing) {
+            for (int i = 0; i < num_travelers; i++) {
+                if (!tv[i].active) continue;
+                if (tv[i].state == T7_TRAVELING) continue;
+
+                PipeMsg7 msg;
+                ssize_t nr = read(report_fds[i], &msg, sizeof(msg));
+                if (nr != (ssize_t)sizeof(msg)) continue;
+
+                int node = msg.current_node;
+
+                switch (msg.type) {
+
+                    case MSG_WAITING:
+                        tv[i].state   = T7_WAITING;
+                        tv[i].to_node = node;
+                        /* Show traveler approaching target node. */
+                        tv[i].entity  = (tv[i].from_node == node)
+                            ? pos[node]
+                            : v2lerp(pos[tv[i].from_node], pos[node], 0.8f);
+
+                        printf("[PID=%d] WAITING for node %d (priority=%d)\n",
+                               (int)tv[i].pid, node, msg.priority);
+                        fflush(stdout);
+
+                        if (ns[node].occupant == -1) {
+                            /* Node free: grant immediately. */
+                            ns[node].occupant = i;
+                            char go = 1;
+                            write(grant_wfds[i], &go, 1);
+                        } else {
+                            /* Enqueue with FCFS serial and SJF priority. */
+                            int q = ns[node].qsize++;
+                            ns[node].queue_idx[q] = i;
+                            ns[node].queue_pri[q] = msg.priority;
+                            ns[node].queue_ser[q] = serial_counter++;
+                        }
+                        break;
+
+                    case MSG_AT_NODE:
+                        tv[i].state     = T7_AT_NODE;
+                        tv[i].from_node = node;
+                        tv[i].to_node   = msg.next_node;
+                        tv[i].entity    = pos[node];
+
+                        if (msg.next_node >= 0 && tv[i].n_vis < MAX_NODES) {
+                            tv[i].vis_from[tv[i].n_vis] = node;
+                            tv[i].vis_to  [tv[i].n_vis] = msg.next_node;
+                            tv[i].n_vis++;
+                        }
+                        printf("[PID=%d] ENTERED node %d\n",
+                               (int)tv[i].pid, node);
+                        fflush(stdout);
+                        break;
+
+                    case MSG_LEAVING:
+                        /* Free node and schedule next waiter. */
+                        ns[node].occupant = -1;
+                        m7_grant_next(ns, node, grant_wfds, is_fcfs);
+
+                        /* Start travel animation to next node. */
+                        tv[i].state     = T7_TRAVELING;
+                        tv[i].from_node = node;
+                        tv[i].to_node   = msg.next_node;
+                        tv[i].W         = g->matrix[node][msg.next_node];
+                        if (tv[i].W < 1) tv[i].W = 1;
+                        tv[i].jump      = 0;
+                        tv[i].timer     = 0.f;
+                        tv[i].entity    = pos[node];
+
+                        printf("[PID=%d] LEAVING node %d -> %d\n",
+                               (int)tv[i].pid, node, msg.next_node);
+                        fflush(stdout);
+                        break;
+
+                    case MSG_FINISHED:
+                        /* Free the last node (destination). */
+                        if (node >= 0 && ns[node].occupant == i) {
+                            ns[node].occupant = -1;
+                            m7_grant_next(ns, node, grant_wfds, is_fcfs);
+                        }
+                        tv[i].state  = T7_DONE;
+                        tv[i].active = 0;
+                        if (node >= 0) tv[i].entity = pos[node];
+                        printf("[PID=%d] FINISHED\n", (int)tv[i].pid);
+                        fflush(stdout);
+                        break;
+
+                    default: break;
+                }
+            }
+
+            /* ---- animation update for traveling travelers ---- */
+            for (int i = 0; i < num_travelers; i++) {
+                if (tv[i].state != T7_TRAVELING) continue;
+
+                tv[i].timer += dt;
+                Vector2 from = pos[tv[i].from_node];
+                Vector2 to   = pos[tv[i].to_node];
+
+                if (tv[i].timer >= JUMP_SEC) {
+                    tv[i].timer -= JUMP_SEC;
+                    tv[i].jump++;
+                    if (tv[i].jump >= tv[i].W) {
+                        tv[i].entity    = to;
+                        tv[i].from_node = tv[i].to_node;
+                        tv[i].jump      = 0;
+                        tv[i].state     = T7_IDLE;
+                        tv[i].timer     = 0.f;
+                    } else {
+                        tv[i].entity = v2lerp(from, to,
+                            (float)tv[i].jump / (float)tv[i].W);
+                    }
+                } else {
+                    float t = ((float)tv[i].jump + tv[i].timer / JUMP_SEC)
+                              / (float)tv[i].W;
+                    if (t > 1.f) t = 1.f;
+                    tv[i].entity = v2lerp(from, to, t);
+                }
+            }
+        }
+
+        /* ---- draw ---- */
+        BeginDrawing();
+        ClearBackground(RAYWHITE);
+
+        /* Header */
+        char header[128];
+        snprintf(header, sizeof(header),
+                 "Milestone 7 - Scheduler: %s | YELLOW = waiting | RED node = occupied",
+                 sched_name);
+        DrawText(header, 10, 10, 14, DARKGRAY);
+
+        /* Edges */
+        for (int i = 0; i < g->n; i++) {
+            for (int j = 0; j < g->n; j++) {
+                if (g->matrix[i][j] == -1) continue;
+                draw_arrow(pos[i], pos[j], LIGHTGRAY, 2.0f);
+                char ws[8]; sprintf(ws, "%d", g->matrix[i][j]);
+                DrawText(ws,
+                    (int)((pos[i].x + pos[j].x) / 2),
+                    (int)((pos[i].y + pos[j].y) / 2),
+                    16, DARKBLUE);
+            }
+        }
+
+        /* Traversed edges per traveler */
+        for (int t = 0; t < num_travelers; t++) {
+            Color pc = traveler_colors[t % 10];
+            pc.a = 160;
+            for (int k = 0; k < tv[t].n_vis; k++)
+                draw_arrow(pos[tv[t].vis_from[k]],
+                           pos[tv[t].vis_to[k]], pc, 3.0f);
+        }
+
+        /* Nodes — color shows occupancy / contention */
+        for (int i = 0; i < g->n; i++) {
+            Color nc = SKYBLUE;
+            if      (ns[i].occupant != -1) nc = (Color){255, 100, 100, 255};
+            else if (ns[i].qsize    >  0)  nc = (Color){255, 200,  80, 255};
+
+            DrawCircleV(pos[i], NODE_RADIUS, nc);
+            if (ns[i].occupant != -1)
+                DrawCircleLines(pos[i].x, pos[i].y,
+                                NODE_RADIUS + 5, RED);
+            DrawCircleLines(pos[i].x, pos[i].y, NODE_RADIUS, DARKGRAY);
+
+            char lbl[4]; sprintf(lbl, "%d", i);
+            int tw = MeasureText(lbl, 18);
+            DrawText(lbl, (int)(pos[i].x - tw/2),
+                     (int)(pos[i].y - 9), 18, BLACK);
+
+            /* Queue size badge above node */
+            if (ns[i].qsize > 0) {
+                char qs[8]; sprintf(qs, "q:%d", ns[i].qsize);
+                DrawText(qs, (int)(pos[i].x - 12),
+                         (int)(pos[i].y - NODE_RADIUS - 18), 13, RED);
+            }
+        }
+
+        /* Travelers */
+        for (int t = 0; t < num_travelers; t++) {
+            if (!tv[t].active && tv[t].state == T7_IDLE) continue;
+
+            Color c = (tv[t].state == T7_WAITING)
+                      ? WAITING7_COLOR
+                      : traveler_colors[t % 10];
+            if (!tv[t].active) c.a = 160;
+
+            Vector2 ep = {
+                tv[t].entity.x + (t % 2 == 0 ? -7.f : 7.f) * (t / 2 + 1),
+                tv[t].entity.y + (t % 2 == 0 ? -7.f : 7.f) * (t / 2 + 1)
+            };
+            Color glow = c; glow.a = 80;
+            DrawCircleV(ep, ENTITY_R + 4, glow);
+            DrawCircleV(ep, ENTITY_R, c);
+            DrawCircleLines(ep.x, ep.y, ENTITY_R,
+                (tv[t].state == T7_WAITING) ? YELLOW : DARKGRAY);
+            DrawCircleV(ep, 4, WHITE);
+            char tl[4]; sprintf(tl, "%d", t);
+            DrawText(tl, (int)(ep.x - 4), (int)(ep.y - 8), 14, BLACK);
+        }
+
+        /* Centered scheduler label */
+        {
+            char label[32];
+            snprintf(label, sizeof(label), "Scheduler: %s", sched_name);
+            int lw = MeasureText(label, 20);
+            DrawRectangle(WINDOW_W/2 - lw/2 - 10, BTN_Y,
+                          lw + 20, BTN_H, (Color){40, 40, 120, 220});
+            DrawText(label, WINDOW_W/2 - lw/2, BTN_Y + 8, 20, WHITE);
+        }
+
+        /* PLAY / STOP button */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+
+            Color bc; const char *lbl;
+            if (all_done)     { bc = DARKGRAY;               lbl = "DONE"; }
+            else if (playing) { bc = (Color){210, 60, 60, 255}; lbl = "STOP"; }
+            else              { bc = (Color){60, 170, 60, 255};  lbl = "PLAY"; }
+
+            DrawRectangleRec(btn, bc);
+            DrawRectangleLinesEx(btn, 2, DARKGRAY);
+            int lw = MeasureText(lbl, 20);
+            DrawText(lbl,
+                     (int)(btn.x + btn.width/2  - lw/2),
+                     (int)(btn.y + btn.height/2 - 10),
+                     20, WHITE);
+        }
+
+        /* Per-traveler status strip on the right */
+        for (int t = 0; t < num_travelers; t++) {
+            Color c = traveler_colors[t % 10];
+            const char *status = "idle";
+            if      (!tv[t].active)                  status = "arrived!";
+            else if (tv[t].state == T7_WAITING)      status = "WAITING (blocked)";
+            else if (tv[t].state == T7_AT_NODE)      status = "in node";
+            else if (tv[t].state == T7_TRAVELING)    status = "moving";
+            char line[64];
+            sprintf(line, "T%d [%d->%d]: %s", t,
+                    tv[t].src_node, tv[t].dst_node, status);
+            DrawRectangle(WINDOW_W - 240, 50 + t * 22, 230, 20,
+                          (Color){c.r, c.g, c.b, 40});
+            DrawText(line, WINDOW_W - 235, 52 + t * 22, 14, c);
+        }
+
+        /* Legend */
+        DrawCircle(20, WINDOW_H - 70, 8, (Color){255, 100, 100, 255});
+        DrawText("node locked",      34, WINDOW_H - 77, 13, DARKGRAY);
+        DrawCircle(20, WINDOW_H - 50, 8, WAITING7_COLOR);
+        DrawText("traveler waiting", 34, WINDOW_H - 57, 13, DARKGRAY);
+        DrawCircle(20, WINDOW_H - 30, 8, traveler_colors[0]);
+        DrawText("traveler moving",  34, WINDOW_H - 37, 13, DARKGRAY);
+
+        /* All-done banner */
+        {
+            int all_done = 1;
+            for (int i = 0; i < num_travelers; i++)
+                if (tv[i].active) { all_done = 0; break; }
+            if (all_done) {
+                const char *banner = "  All travelers have arrived!  ";
+                int mw = MeasureText(banner, 24);
+                DrawRectangle(WINDOW_W/2 - mw/2 - 10, WINDOW_H/2 - 24,
+                              mw + 20, 48, Fade(BLACK, 0.65f));
+                DrawText(banner, WINDOW_W/2 - mw/2,
+                         WINDOW_H/2 - 12, 24, YELLOW);
+            }
+        }
+
+        EndDrawing();
+    }
+
+    /* Kill any children still blocked waiting for a grant. */
+    for (int i = 0; i < num_travelers; i++)
+        if (tv[i].active) kill(tv[i].pid, SIGTERM);
+
+    CloseWindow();
+}
