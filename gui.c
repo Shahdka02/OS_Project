@@ -557,6 +557,7 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
         int       vis_from[MAX_NODES]; /* edge start nodes that have been traversed*/
         int       vis_to[MAX_NODES];   /* edge end nodes that have been traversed  */
         int       n_vis;        /* number of traversed edges recorded              */
+        int       no_path;      /* 1 = child reported MSG_NO_PATH (disconnected)   */
     } Traveler5;
 
     Vector2 pos[MAX_NODES];
@@ -577,6 +578,7 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
         tv[i].src_node  = t_src[i];
         tv[i].dst_node  = t_dst[i];
         tv[i].n_vis     = 0;
+        tv[i].no_path   = 0;
     }
 
     int playing = 0;
@@ -605,7 +607,13 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
                 ssize_t n = read(tv[i].pipe_fd, &msg, sizeof(msg)); // non-blocking read; returns -1 if no data
                 if (n != (ssize_t)sizeof(msg)) continue;             // incomplete or no message; try again next frame
 
-                if (msg.type == MSG_FINISHED) {      // child signalled it is done
+                if (msg.type == MSG_NO_PATH) {       // child found no path in a disconnected graph
+                    printf("[PID=%d] *** NO PATH from node %d to node %d — traveler is stranded! ***\n",
+                           (int)tv[i].pid, msg.current_node, msg.next_node);
+                    fflush(stdout);
+                    tv[i].active  = 0;              // mark as inactive so the GUI stops expecting messages
+                    tv[i].no_path = 1;              // flag so the GUI can display a distinct status
+                } else if (msg.type == MSG_FINISHED) { // child signalled it is done
                     printf("[PID=%d] finished\n", (int)tv[i].pid);
                     fflush(stdout);
                     tv[i].active = 0;               // mark traveler as inactive
@@ -710,10 +718,12 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
 
         /* draw each traveler entity */
         for (int t = 0; t < num_travelers; t++) {
-            if (!tv[t].active && tv[t].state == ANIM_IDLE) continue; // not yet started
+            /* skip travelers that haven't started and have no news yet */
+            if (!tv[t].active && tv[t].state == ANIM_IDLE && !tv[t].no_path) continue;
 
             Color c = traveler_colors[t % 10];
-            if (!tv[t].active) c.a = 160;           // fade out travelers that have finished
+            if      (tv[t].no_path)  c = RED;       // stranded travelers shown in red
+            else if (!tv[t].active)  c.a = 160;     // fade out travelers that have arrived
 
             Vector2 ep = {
                 tv[t].entity.x + (t % 2 == 0 ? -6.f : 6.f) * (t / 2), // stagger to reduce overlap
@@ -722,10 +732,13 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
             Color glow = c; glow.a = 80;
             DrawCircleV(ep, ENTITY_R + 4, glow);
             DrawCircleV(ep, ENTITY_R, c);
-            DrawCircleLines(ep.x, ep.y, ENTITY_R, DARKGRAY);
+            DrawCircleLines(ep.x, ep.y, ENTITY_R, tv[t].no_path ? RED : DARKGRAY);
             DrawCircleV(ep, 4, WHITE);
             char tl[4]; sprintf(tl, "%d", t);
             DrawText(tl, (int)(ep.x - 4), (int)(ep.y - 8), 14, WHITE);
+            /* draw an "X" above the entity to mark stranded travelers */
+            if (tv[t].no_path)
+                DrawText("X", (int)(ep.x - 5), (int)(ep.y - ENTITY_R - 16), 16, RED);
         }
 
         /* draw button */
@@ -752,7 +765,8 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
         for (int t = 0; t < num_travelers; t++) {
             Color c = traveler_colors[t % 10];
             const char *status = "idle";
-            if      (!tv[t].active)                  status = "arrived!";
+            if      (tv[t].no_path)                  { status = "NO PATH!"; c = RED; }
+            else if (!tv[t].active)                  status = "arrived!";
             else if (tv[t].state == ANIM_MOVING)     status = "moving";
             else if (tv[t].state == ANIM_AT_NODE)    status = "at node";
             else if (tv[t].state == ANIM_DONE)       status = "arrived!";
@@ -766,16 +780,21 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
 
         /* all-done banner */
         {
-            int all_done = 1;
-            for (int i = 0; i < num_travelers; i++)
+            int all_done = 1, any_no_path = 0;
+            for (int i = 0; i < num_travelers; i++) {
                 if (tv[i].active) { all_done = 0; break; }
+                if (tv[i].no_path) any_no_path = 1;
+            }
             if (all_done) {
-                const char *banner = "  All travelers have arrived!  ";
+                const char *banner = any_no_path
+                    ? "  Done — some travelers had no path!  "
+                    : "  All travelers have arrived!  ";
+                Color banner_color = any_no_path ? RED : YELLOW;
                 int mw = MeasureText(banner, 24);
                 DrawRectangle(WINDOW_W/2 - mw/2 - 10, WINDOW_H/2 - 24,
                               mw + 20, 48, Fade(BLACK, 0.65f));
                 DrawText(banner, WINDOW_W/2 - mw/2,
-                         WINDOW_H/2 - 12, 24, YELLOW);
+                         WINDOW_H/2 - 12, 24, banner_color);
             }
         }
 

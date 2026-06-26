@@ -17,9 +17,9 @@
 static void child_run(int fd, Graph* g, int src, int dst) { // fd = write end of this child's pipe
     DijkstraResult res = dijkstra(g, src, dst);    // each child independently computes its own shortest path
 
-    if (!res.found || res.path_len == 0) {         // no path exists for this traveler
-        PipeMsg fin = { MSG_FINISHED, -1, -1 };    // compose a "finished" message with sentinel values
-        write(fd, &fin, sizeof(fin));              // send the message to the parent through the pipe
+    if (!res.found || res.path_len == 0) {         // no path exists for this traveler (disconnected graph)
+        PipeMsg msg = { MSG_NO_PATH, src, dst };   // special message: carries source and destination for context
+        write(fd, &msg, sizeof(msg));              // send the no-path message to the parent through the pipe
         close(fd);                                 // close the write end before exiting
         exit(0);                                   // child exits
     }

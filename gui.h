@@ -18,7 +18,8 @@ typedef enum {                                     // enum listing all IPC messa
     MSG_WAITING,                                   // child is blocked outside next_node (mutex is taken)
     MSG_AT_NODE,                                   // child has acquired the mutex and entered current_node
     MSG_FINISHED,                                  // child is done; current_node = -1
-    MSG_LEAVING                                    // child is releasing a node (used in milestone 7)
+    MSG_LEAVING,                                   // child is releasing a node (used in milestone 7)
+    MSG_NO_PATH                                    // child found no path to goal (disconnected graph)
 } MsgType;                                        // name of the enum type
 
 typedef struct {                                   // IPC message struct used in milestones 5 and 6
