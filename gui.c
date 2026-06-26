@@ -1133,7 +1133,8 @@ typedef struct {
    For FCFS: pick the traveler with the smallest serial number (earliest arrival).
    For SJF: pick the traveler with the smallest remaining path weight. */
 static void m7_grant_next(M7NodeSched* ns, int node,
-                           int* grant_wfds, int is_fcfs) {
+                           int* grant_wfds, int is_fcfs,
+                           pid_t* pids, const char* sched_name) {
     if (ns[node].occupant != -1 || ns[node].qsize == 0) return; // node still occupied or no one waiting
 
     int best = 0;                                   // assume the first queued traveler is the best candidate
@@ -1147,6 +1148,18 @@ static void m7_grant_next(M7NodeSched* ns, int node,
 
     int tidx = ns[node].queue_idx[best];            // index of the winning traveler
     ns[node].occupant = tidx;                       // mark the node as occupied by this traveler
+
+    /* Scheduler tracing: print the ready queue and explain the decision */
+    const char* why     = is_fcfs ? "earliest arrival" : "shortest remaining path";
+    int         best_key = is_fcfs ? ns[node].queue_ser[best] : ns[node].queue_pri[best];
+    printf("[SCHED %s] node %d ready: [", sched_name, node);
+    for (int q = 0; q < ns[node].qsize; q++) {
+        if (q > 0) printf(", ");
+        int key = is_fcfs ? ns[node].queue_ser[q] : ns[node].queue_pri[q];
+        printf("PID=%d(key=%d)", (int)pids[ns[node].queue_idx[q]], key);
+    }
+    printf("] -> picked PID=%d (%s, key=%d)\n", (int)pids[tidx], why, best_key);
+    fflush(stdout);
 
     /* Remove the winning entry by shifting the rest of the queue down */
     for (int q = best; q < ns[node].qsize - 1; q++) {
@@ -1270,6 +1283,9 @@ void draw_graph_multi7(Graph* g, pid_t* pids,
                             ns[node].occupant = i;
                             char go = 1;
                             write(grant_wfds[i], &go, 1);
+                            printf("[SCHED %s] node %d ready: [PID=%d] -> picked PID=%d (no contention)\n",
+                                   sched_name, node, (int)tv[i].pid, (int)tv[i].pid);
+                            fflush(stdout);
                         } else {                    // node is occupied: add to wait queue
                             int q = ns[node].qsize++;
                             ns[node].queue_idx[q] = i;
@@ -1296,7 +1312,7 @@ void draw_graph_multi7(Graph* g, pid_t* pids,
 
                     case MSG_LEAVING:               // child is leaving 'node' and moving to msg.next_node
                         ns[node].occupant = -1;     // free the node
-                        m7_grant_next(ns, node, grant_wfds, is_fcfs); // grant access to next waiter
+                        m7_grant_next(ns, node, grant_wfds, is_fcfs, pids, sched_name); // grant access to next waiter
 
                         tv[i].state     = T7_TRAVELING; // start edge animation
                         tv[i].from_node = node;
@@ -1315,7 +1331,7 @@ void draw_graph_multi7(Graph* g, pid_t* pids,
                     case MSG_FINISHED:              // child has completed its journey
                         if (node >= 0 && ns[node].occupant == i) { // free the last node
                             ns[node].occupant = -1;
-                            m7_grant_next(ns, node, grant_wfds, is_fcfs);
+                            m7_grant_next(ns, node, grant_wfds, is_fcfs, pids, sched_name);
                         }
                         tv[i].state  = T7_DONE;
                         tv[i].active = 0;
