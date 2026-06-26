@@ -605,10 +605,16 @@ void draw_graph_multi5(Graph* g, pid_t* pids, int* fds,
                 ssize_t n = read(tv[i].pipe_fd, &msg, sizeof(msg)); // non-blocking read; returns -1 if no data
                 if (n != (ssize_t)sizeof(msg)) continue;             // incomplete or no message; try again next frame
 
-                if (msg.type == MSG_FINISHED) {      // child signalled it is done
+                if (msg.type == MSG_NO_PATH){
+                    printf("[PID=%d] No path exists from %d to %d\n", (int)tv[i].pid, msg.current_node, msg.next_node);
+                    fflush(stdout);
+                }else if (msg.type == MSG_FINISHED) {      // child signalled it is done
                     printf("[PID=%d] finished\n", (int)tv[i].pid);
                     fflush(stdout);
                     tv[i].active = 0;               // mark traveler as inactive
+                else if (msg.type == MSG_MOVING) {
+                    printf("[PID=%d] moving from %d to %d\n",  (int)tv[i].pid, msg.current_node, msg.next_node);
+                    fflush(stdout);
                 } else if (msg.type == MSG_AT_NODE && msg.next_node < 0) { // arrived at destination
                     printf("[PID=%d] arrived at node %d | DESTINATION\n",
                            (int)tv[i].pid, msg.current_node);

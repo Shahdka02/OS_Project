@@ -18,6 +18,9 @@ static void child_run(int fd, Graph* g, int src, int dst) { // fd = write end of
     DijkstraResult res = dijkstra(g, src, dst);    // each child independently computes its own shortest path
 
     if (!res.found || res.path_len == 0) {         // no path exists for this traveler
+        PipeMsg msg = { MSG_NO_PATH, src, dst};
+        write(fd, &msg, sizeof(msg));
+
         PipeMsg fin = { MSG_FINISHED, -1, -1 };    // compose a "finished" message with sentinel values
         write(fd, &fin, sizeof(fin));              // send the message to the parent through the pipe
         close(fd);                                 // close the write end before exiting
@@ -30,6 +33,8 @@ static void child_run(int fd, Graph* g, int src, int dst) { // fd = write end of
         write(fd, &msg, sizeof(msg));              // send message through the pipe
 
         if (next >= 0) {                           // if there is a next node, sleep to simulate travel time
+            PipeMsg moving = { MSG_MOVING, res.path[k], next};
+            write(fd, &moving, sizeof(moving));
             int w = g->matrix[res.path[k]][next]; // weight of the edge from current node to next
             long ms = (long)NODE_WAIT_MS + (long)w * JUMP_MS; // total delay: 1 s at node + weight * 300 ms per jump
             struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L }; // convert ms to seconds + nanoseconds

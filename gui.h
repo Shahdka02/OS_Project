@@ -14,6 +14,7 @@ void draw_graph(Graph* g, DijkstraResult* res);
 void draw_graph_multi(Graph* g, DijkstraResult* results, pid_t* pids, int num_travelers);
 
 typedef enum {                                     // enum listing all IPC message types sent through pipes
+    MSG_NO_PATH
     MSG_MOVING,                                    // child is currently travelling toward next_node
     MSG_WAITING,                                   // child is blocked outside next_node (mutex is taken)
     MSG_AT_NODE,                                   // child has acquired the mutex and entered current_node
